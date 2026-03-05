@@ -21,6 +21,8 @@ void do_loader(void)
 #else
 #error "Unknown DEMO_RES. Build with DEMO_RES=256x256 or DEMO_RES=512x512"
 #endif
+    gvram_fill_dma(0);   // fill background with colour index 0
+    init_hblank();       // install HBlank ISR for per-scanline blue gradient
     init_sprite_plex();
     sprite_plex_loop();
     while (1);

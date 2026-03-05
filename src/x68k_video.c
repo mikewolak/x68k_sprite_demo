@@ -126,16 +126,17 @@ void gvram_fill_dma(uint32_t value)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Twilight sky gradient — 24 entries x 16 lines = 384 scanlines
-// GRB555: (G<<11)|(R<<6)|(B<<1). Deep night blue top to warm horizon glow.
+// Blue gradient — 24 entries x 16 lines = 384 scanlines
+// GRB555: (G<<11)|(R<<6)|(B<<1). Pure blue, dark at top to vivid at bottom.
+// Only the first ~8 bands (lines 0-127) are visible in 256-mode MAME view.
 ////////////////////////////////////////////////////////////////////////////////
 static const uint16_t sky_colors[24] = {
-    0x0058, 0x005C, 0x009E, 0x00A2,  //  0- 3: night sky
-    0x00E4, 0x0126, 0x0966, 0x09E4,  //  4- 7: early blue
-    0x1262, 0x12E0, 0x1B5C, 0x23DA,  //  8-11: deepening dusk
-    0x2C56, 0x34D4, 0x3D50, 0x458E,  // 12-15: mid dusk
-    0x4E0C, 0x564A, 0x6688, 0x6EC6,  // 16-19: warm glow
-    0x7704, 0x7F04, 0x8742, 0x8F82,  // 20-23: horizon
+    0x0004, 0x0006, 0x000A, 0x000E,  //  0- 3: near-black to dark blue
+    0x0014, 0x001C, 0x0026, 0x0032,  //  4- 7: mid to vivid blue (visible)
+    0x003A, 0x003C, 0x003E, 0x003E,  //  8-11: saturated blue (off-screen)
+    0x003E, 0x003E, 0x003E, 0x003E,  // 12-15: max blue
+    0x003E, 0x003E, 0x003E, 0x003E,  // 16-19: max blue
+    0x003E, 0x003E, 0x003E, 0x003E,  // 20-23: max blue
 };
 
 static volatile uint16_t hblank_scanline;
@@ -199,5 +200,6 @@ void init_hblank(void)
     REG8(MFP_IMRA) = 0x80;
 
     // Lower IPL to 5 to allow level-6 MFP interrupts
-    __asm__ volatile("move.w #0x2500,sr");
+    // Use raw opcode: MOVE #0x2500,SR = 0x46FC 0x2500
+    __asm__ volatile(".word 0x46FC, 0x2500");
 }
