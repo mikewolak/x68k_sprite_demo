@@ -120,6 +120,7 @@ static uint32_t frame_counter;
 static uint16_t swap_countdown;
 static uint16_t swap_batch;
 static uint16_t pat_counter;
+static uint8_t  pat_tick;       // counts 0-2; pat_counter++ every 3 frames
 
 ////////////////////////////////////////////////////////////////////////////////
 // load_palette — copy 16 GRB555 words to sprite palette bank (0-15)
@@ -259,14 +260,17 @@ void sprite_plex_loop(void)
     swap_countdown = SWAP_FRAMES;
     swap_batch     = 0;
     pat_counter    = 0;
+    pat_tick       = 0;
 
     for (;;) {
         wait_vblank();
         frame_counter++;
 
-        // Advance colour-wave counter every 3 frames
-        if (frame_counter % 3 == 0)
+        // Advance colour-wave counter every 3 frames (avoids 32-bit modulo / libgcc BSR.L)
+        if (++pat_tick >= 3) {
+            pat_tick = 0;
             pat_counter++;
+        }
 
         // Batch swap countdown (~4 s)
         if (--swap_countdown == 0) {

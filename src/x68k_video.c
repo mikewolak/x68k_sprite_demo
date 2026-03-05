@@ -66,8 +66,8 @@ void init_video(int mode)
 ////////////////////////////////////////////////////////////////////////////////
 void wait_vblank(void)
 {
-    while (!(REG16(MFP_GPIP) & 0x0010));  // if in VBlank, wait for display
-    while (  REG16(MFP_GPIP) & 0x0010);   // wait for VBlank to start
+    while (!(REG8(MFP_GPIP_B) & 0x10));  // if in VBlank, wait for display
+    while (  REG8(MFP_GPIP_B) & 0x10);   // wait for VBlank to start
 }
 
 ////////////////////////////////////////////////////////////////////////////////
