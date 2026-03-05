@@ -7,7 +7,11 @@
 //
 // Demo phases (each 360 frames, alternating):
 //   Phase 0: sine-wave ripple grid
-//   Phase 1: sprites rotate around a Bresenham circle (r=90, 100 points)
+//   Phase 1: sprites rotate around a Bresenham circle
+//
+// Visible display calibration (256 mode, MAME "Disk Drive and Keyboard LEDs"):
+//   The case artwork exposes screen_y 0-128 (~128 lines visible).
+//   Circle: centre screen(128,64) -> reg(144,80), r=55 -> screen_y 9-119.
 //
 // Sprite slot layout:
 //   0 .. PLEX_TOTAL-1  : animated plex grid / circle
@@ -31,24 +35,31 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 // Grid layout — resolved at compile time from DEMO_RES
+//
+// Visible area calibration: screen_y 0-128 visible in 256 mode.
+// Grid fits 10 rows in ~120 lines: GRID_STEP_Y=12, BASE_Y=22 (screen_y 6).
+// Grid fits 10 cols in 256 lines:  GRID_STEP_X=26, BASE_X=27 (screen_x 11).
 ////////////////////////////////////////////////////////////////////////////////
 #define FONT_STEP   16      // pixel spacing between font character sprites
 #define FONT_REG_Y  18      // sprite reg Y for HUD row (screen y=2)
 
 #if DEMO_RES == 256
-// 256x256: 10x10 grid = 100 sprites, GRID_STEP=26
-// margin=(256-9*26)/2=11 -> reg=11+16=27; covers screen_x/y 11-245
-#define GRID_STEP   26
+// 256x256 mode — visible area ~128 lines tall x 256 wide
+// X: margin=(256-9*26)/2=11 -> BASE_X=11+16=27; covers screen_x 11-245
+// Y: margin=(120-9*12)/2=6  -> BASE_Y=6+16=22;  covers screen_y 6-114
+#define GRID_STEP_X 26
+#define GRID_STEP_Y 12
 #define PLEX_COLS   10
 #define PLEX_ROWS   10
 #define PLEX_TOTAL  100
 #define BASE_X      27
-#define BASE_Y      27
+#define BASE_Y      22
 #define FONT_REG_X  208     // flush right: screen x=192, reg x=208
 #elif DEMO_RES == 512
-// 512x512: 15x8 grid = 120 sprites (HW max with HUD at 120-123), GRID_STEP=32
+// 512x512: 15x8 grid = 120 sprites (HW max with HUD at 120-123)
 // X: 256 - 14*32/2 = 32 -> reg = 48; Y: 256 - 7*32/2 = 144 -> reg = 160
-#define GRID_STEP   32
+#define GRID_STEP_X 32
+#define GRID_STEP_Y 32
 #define PLEX_COLS   15
 #define PLEX_ROWS   8
 #define PLEX_TOTAL  120
@@ -99,8 +110,6 @@ static const uint8_t * const swap_src_table[3] = {
 
 ////////////////////////////////////////////////////////////////////////////////
 // Sine table — 256 entries, signed bytes, amplitude ~20
-// Each sprite orbits its grid position in a circle; phase offset by (col,row)
-// produces a ripple-wave effect across the grid.
 ////////////////////////////////////////////////////////////////////////////////
 static const int8_t sine_table[256] = {
      0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
@@ -122,37 +131,35 @@ static const int8_t sine_table[256] = {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Bresenham circle path — 100 points evenly sampled from a r=90 circle,
-// sorted CCW from east. centre=(128,128), reg = screen+16 on each axis.
-// Produced by the midpoint-circle algorithm in Python; no float in the demo.
+// Bresenham circle path — 100 points evenly sampled from a r=55 circle,
+// sorted CCW from east.
+// Centre: screen(128,64) -> reg(144,80). screen_y range: 9-119.
+// Calibrated for visible area screen_y 0-128 in 256-mode MAME view.
 ////////////////////////////////////////////////////////////////////////////////
-static const uint8_t circle_lut[100][2] = {  /* {reg_x, reg_y} */
-    {234,144}, {234,138}, {233,133}, {233,128}, {232,123},
-    {230,118}, {228,113}, {226,107}, {224,102}, {221, 97},
-    {217, 92}, {214, 87}, {209, 82}, {204, 77}, {199, 73},
-    {194, 69}, {189, 66}, {184, 63}, {179, 61}, {173, 59},
-    {168, 57}, {163, 56}, {158, 55}, {153, 54}, {148, 54},
-    {143, 54}, {138, 54}, {133, 55}, {128, 55}, {123, 56},
-    {118, 58}, {113, 60}, {107, 62}, {102, 64}, { 97, 67},
-    { 92, 71}, { 87, 74}, { 82, 79}, { 77, 84}, { 73, 89},
-    { 69, 94}, { 66, 99}, { 63,104}, { 61,109}, { 59,115},
-    { 57,120}, { 56,125}, { 55,130}, { 54,135}, { 54,140},
-    { 54,145}, { 54,150}, { 55,155}, { 55,160}, { 56,165},
-    { 58,170}, { 60,175}, { 62,181}, { 64,186}, { 67,191},
-    { 71,196}, { 74,201}, { 79,206}, { 84,211}, { 89,215},
-    { 94,219}, { 99,222}, {104,225}, {109,227}, {115,229},
-    {120,231}, {125,232}, {130,233}, {135,234}, {140,234},
-    {145,234}, {150,234}, {155,233}, {160,233}, {165,232},
-    {170,230}, {175,228}, {181,226}, {186,224}, {191,221},
-    {196,217}, {201,214}, {206,209}, {211,204}, {215,199},
-    {219,194}, {222,189}, {225,184}, {227,179}, {229,173},
-    {231,168}, {232,163}, {233,158}, {234,153}, {234,148},
+static const uint8_t circle_lut[100][2] = {  /* {reg_x, reg_y} Bresenham r=55, centre reg(144,80) */
+    { 89, 79}, { 89, 76}, { 89, 73}, { 90, 70}, { 91, 67},
+    { 92, 63}, { 93, 60}, { 94, 57}, { 96, 54}, { 97, 51},
+    { 99, 48}, {102, 45}, {104, 42}, {108, 38}, {111, 36},
+    {114, 34}, {117, 32}, {120, 31}, {123, 29}, {126, 28},
+    {129, 27}, {133, 26}, {136, 26}, {139, 25}, {142, 25},
+    {145, 25}, {148, 25}, {151, 25}, {154, 26}, {157, 27},
+    {161, 28}, {164, 29}, {167, 30}, {170, 32}, {173, 33},
+    {176, 35}, {179, 38}, {182, 40}, {186, 44}, {188, 47},
+    {190, 50}, {192, 53}, {193, 56}, {195, 59}, {196, 62},
+    {197, 65}, {198, 69}, {198, 72}, {199, 75}, {199, 78},
+    {199, 81}, {199, 84}, {199, 87}, {198, 90}, {197, 93},
+    {196, 97}, {195,100}, {194,103}, {192,106}, {191,109},
+    {189,112}, {186,115}, {184,118}, {180,122}, {177,124},
+    {174,126}, {171,128}, {168,129}, {165,131}, {162,132},
+    {159,133}, {155,134}, {152,134}, {149,135}, {146,135},
+    {143,135}, {140,135}, {137,135}, {134,134}, {131,133},
+    {127,132}, {124,131}, {121,130}, {118,128}, {115,127},
+    {112,125}, {109,122}, {106,120}, {102,116}, {100,113},
+    { 98,110}, { 96,107}, { 95,104}, { 93,101}, { 92, 98},
+    { 91, 95}, { 90, 91}, { 90, 88}, { 89, 85}, { 89, 82},
 };
 
 // PCG load order: 50 unique-shape patterns first, then 78 colour variants.
-// Analysis of sprite_patterns.s shows only 50 distinct pixel shapes across
-// 256 patterns; loading unique shapes into PCG slots 0-49 ensures every
-// on-screen sprite at pat_base=0 maps to a unique shape.
 static const uint8_t pcg_init_order[128] = {
       0,  5, 10, 15, 20, 21, 27, 63, 68, 73, 78, 83, 84, 85, 92, 99,
     104,109,114,119,124,125,126,136,138,140,145,146,147,148,149,159,
@@ -200,12 +207,6 @@ static void load_to_pcg(const uint8_t *src, int start_pcg, int count)
 
 ////////////////////////////////////////////////////////////////////////////////
 // update_all_sprites — reposition all PLEX_TOTAL sprites for this frame
-//
-// For each sprite (slot):
-//   angle = (frame_lo2 + col*13 + row*23) & 0xFF
-//   X = BASE_X + col*GRID_STEP + sine[angle]
-//   Y = BASE_Y + row*GRID_STEP + sine[(angle+64)&0xFF]
-//   ctrl = (slot + pat_counter) & 0x7F   (colour wave shift)
 ////////////////////////////////////////////////////////////////////////////////
 static void update_all_sprites(void)
 {
@@ -214,8 +215,8 @@ static void update_all_sprites(void)
     uint16_t pat_base  = pat_counter & 0x7F;
     uint16_t bx        = BASE_X;
     uint16_t by        = BASE_Y;
-    uint16_t col_phase = 0;   // accumulated col * 13
-    uint16_t row_phase = 0;   // accumulated row * 23
+    uint16_t col_phase = 0;
+    uint16_t row_phase = 0;
     uint16_t col       = 0;
     int slot;
 
@@ -230,14 +231,14 @@ static void update_all_sprites(void)
         sa[slot].prio = 0x0003;
 
         col++;
-        bx        = (uint16_t)(bx + GRID_STEP);
+        bx        = (uint16_t)(bx + GRID_STEP_X);
         col_phase = (uint16_t)(col_phase + 13);
 
         if (col >= PLEX_COLS) {
             col       = 0;
             bx        = BASE_X;
             col_phase = 0;
-            by        = (uint16_t)(by + GRID_STEP);
+            by        = (uint16_t)(by + GRID_STEP_Y);
             row_phase = (uint16_t)(row_phase + 23);
         }
     }
@@ -246,7 +247,6 @@ static void update_all_sprites(void)
 ////////////////////////////////////////////////////////////////////////////////
 // update_circle_sprites — arrange all PLEX_TOTAL sprites around the
 // Bresenham circle, offset by circle_rot for rotation each frame.
-// No modulo: slot+rot <= 198 so one conditional subtract suffices.
 ////////////////////////////////////////////////////////////////////////////////
 static void update_circle_sprites(void)
 {
@@ -268,7 +268,6 @@ static void update_circle_sprites(void)
 
 ////////////////////////////////////////////////////////////////////////////////
 // swap_sprite_batch — CPU-copy 64 patterns into PCG slots 64-127
-// Uses longword copies (64*128/4 = 2048 longwords) for speed.
 ////////////////////////////////////////////////////////////////////////////////
 static void swap_sprite_batch(void)
 {
@@ -281,7 +280,6 @@ static void swap_sprite_batch(void)
 
 ////////////////////////////////////////////////////////////////////////////////
 // update_font_display — write ctrl words for HUD sprites 120-123
-// Displays PLEX_TOTAL as 4 hex digits (e.g. 120 = 0x0078 -> "0078")
 ////////////////////////////////////////////////////////////////////////////////
 static void update_font_display(void)
 {
@@ -301,7 +299,6 @@ void init_sprite_plex(void)
     volatile sprite_t *sa = SPRITES;
     int i;
 
-    // Clear all 128 sprite slots to off-screen
     for (i = 0; i < 128; i++) {
         sa[i].x    = 0x03FF;
         sa[i].y    = 0x03FF;
@@ -309,21 +306,17 @@ void init_sprite_plex(void)
         sa[i].prio = 0;
     }
 
-    // Load palettes
     load_palette(sprite_palette_grb555, PAL_PLEX);
     load_palette(font_palette_grb555,   PAL_FONT);
 
-    // Load PCG: unique-shape patterns first (slots 0-49), colour variants after.
-    // pcg_init_order maps each PCG slot to its source pattern for max diversity.
     for (i = 0; i < 128; i++)
         load_to_pcg(sprite_patterns + (uint32_t)pcg_init_order[i] * 128, i, 1);
     load_to_pcg(font_16x16_hex_data, PCG_FONT, FONT_CHARS);
 
-    // Position HUD sprites 120-123 at top-right, showing '0' initially
     for (i = 0; i < 4; i++) {
         sa[120 + i].x    = (uint16_t)(FONT_REG_X + i * FONT_STEP);
         sa[120 + i].y    = FONT_REG_Y;
-        sa[120 + i].ctrl = (uint16_t)(PAL_FONT_BITS | PCG_FONT);  // '0'
+        sa[120 + i].ctrl = (uint16_t)(PAL_FONT_BITS | PCG_FONT);
         sa[120 + i].prio = 0x0003;
     }
 }
@@ -346,13 +339,11 @@ void sprite_plex_loop(void)
         wait_vblank();
         frame_counter++;
 
-        // Advance colour-wave counter every 3 frames (avoids 32-bit modulo / libgcc BSR.L)
         if (++pat_tick >= 3) {
             pat_tick = 0;
             pat_counter++;
         }
 
-        // Batch swap countdown (~4 s)
         if (--swap_countdown == 0) {
             swap_countdown = SWAP_FRAMES;
             if (++swap_batch >= 3)
@@ -360,7 +351,6 @@ void sprite_plex_loop(void)
             swap_sprite_batch();
         }
 
-        // Phase switch every PHASE_FRAMES frames
         if (--phase_counter == 0) {
             phase_counter = PHASE_FRAMES;
             demo_phase ^= 1;
@@ -370,7 +360,6 @@ void sprite_plex_loop(void)
         if (demo_phase == 0) {
             update_all_sprites();
         } else {
-            // Advance circle rotation each frame (mod 100, no libgcc modulo)
             if (++circle_rot >= 100)
                 circle_rot = 0;
             update_circle_sprites();
