@@ -1,0 +1,5 @@
+obj/
+build/
+nvram/
+roms/
+tools/makexdf
