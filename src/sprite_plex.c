@@ -5,9 +5,12 @@
 //   DEMO_RES=256: 10x10 grid = 100 sprites, 256x256 31kHz
 //   DEMO_RES=512: 15x8 grid = 120 sprites, 512x512 31kHz
 //
-// Demo phases (each 360 frames, alternating):
-//   Phase 0: sine-wave ripple grid
-//   Phase 1: sprites rotate around a Bresenham circle
+// Demo phases:
+//   Phase 0 (360 frames): sine-wave ripple grid
+//   Phase 1 (360 frames): sprites rotate around a Bresenham circle
+//   Phase 2 (until done): decompose — circle keeps rotating while each
+//     sprite is launched one-at-a-time, gliding 2px/frame to its grid
+//     target; once all 100 sprites arrive, phase 0 resumes.
 //
 // Visible display calibration (256 mode, MAME "Disk Drive and Keyboard LEDs"):
 //   The case artwork exposes screen_y 0-128 (~128 lines visible).
@@ -77,6 +80,8 @@
 #define PAL_FONT_BITS   0x0100  // palette 1 shifted into ctrl word bits 11:8
 #define SWAP_FRAMES     216     // ~4 s at ~54 Hz
 #define PHASE_FRAMES    360     // frames per demo phase
+#define DECOMP_LAUNCH   7       // frames between successive sprite launches
+#define DECOMP_SPEED    2       // pixels per frame toward grid target
 
 ////////////////////////////////////////////////////////////////////////////////
 // Sprite attribute RAM layout: 8 bytes per slot, 128 slots at SP_ATTR_RAM
@@ -176,10 +181,18 @@ static uint32_t frame_counter;
 static uint16_t swap_countdown;
 static uint16_t swap_batch;
 static uint16_t pat_counter;
-static uint8_t  pat_tick;       // counts 0-2; pat_counter++ every 3 frames
-static uint16_t phase_counter;  // counts down; phase switches at 0
-static uint8_t  demo_phase;     // 0=grid ripple, 1=circle rotate
-static uint8_t  circle_rot;     // 0-99 rotation index for circle mode
+static uint8_t  pat_tick;         // counts 0-2; pat_counter++ every 3 frames
+static uint16_t phase_counter;    // counts down; fires grid<->circle switch
+static uint8_t  demo_phase;       // 0=grid, 1=circle, 2=decompose
+static uint8_t  circle_rot;       // 0-99 rotation index for circle/decompose
+
+// Decompose phase state
+static uint8_t  decompose_count;           // sprites launched so far (0-PLEX_TOTAL)
+static uint8_t  decompose_arrived;         // sprites that reached their grid target
+static uint8_t  decompose_tick;            // frames since last launch (0-6)
+static int16_t  decomp_cur_x[PLEX_TOTAL]; // current sprite x during flight
+static int16_t  decomp_cur_y[PLEX_TOTAL]; // current sprite y during flight
+static uint8_t  decomp_state[PLEX_TOTAL]; // 0=on circle, 1=flying, 2=arrived
 
 ////////////////////////////////////////////////////////////////////////////////
 // load_palette — copy 16 GRB555 words to sprite palette bank (0-15)
@@ -267,6 +280,94 @@ static void update_circle_sprites(void)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// update_decompose_sprites — decompose phase renderer.
+//
+// Each sprite is in one of three states:
+//   0 (circle):  positioned on rotating circle as normal
+//   1 (flying):  glides DECOMP_SPEED px/frame toward its grid target
+//   2 (arrived): joins the sine-wave grid animation
+//
+// Sprites transition 0->1 one at a time every DECOMP_LAUNCH frames.
+// When a sprite's current position reaches its grid target, it moves to
+// state 2 and decompose_arrived is incremented.
+////////////////////////////////////////////////////////////////////////////////
+static void update_decompose_sprites(void)
+{
+    volatile sprite_t *sa = SPRITES;
+    uint8_t  frame_lo2 = (uint8_t)(frame_counter * 2);
+    uint16_t pat_base  = pat_counter & 0x7F;
+    uint8_t  rot       = circle_rot;
+    uint16_t bx        = BASE_X;
+    uint16_t by        = BASE_Y;
+    uint16_t col_phase = 0;
+    uint16_t row_phase = 0;
+    uint16_t col       = 0;
+    int slot;
+
+    for (slot = 0; slot < PLEX_TOTAL; slot++) {
+        uint8_t state = decomp_state[slot];
+
+        if (state == 0) {
+            // Still on rotating circle
+            uint8_t pos = (uint8_t)(slot + rot);
+            if (pos >= 100) pos = (uint8_t)(pos - 100);
+            sa[slot].x = circle_lut[pos][0];
+            sa[slot].y = circle_lut[pos][1];
+
+        } else if (state == 1) {
+            // Flying toward grid centre (bx, by) at DECOMP_SPEED px/frame
+            int16_t tx = (int16_t)bx;
+            int16_t ty = (int16_t)by;
+            int16_t cx = decomp_cur_x[slot];
+            int16_t cy = decomp_cur_y[slot];
+            int16_t ex = tx - cx;
+            int16_t ey = ty - cy;
+
+            if      (ex >  DECOMP_SPEED) cx = (int16_t)(cx + DECOMP_SPEED);
+            else if (ex < -DECOMP_SPEED) cx = (int16_t)(cx - DECOMP_SPEED);
+            else                          cx = tx;
+
+            if      (ey >  DECOMP_SPEED) cy = (int16_t)(cy + DECOMP_SPEED);
+            else if (ey < -DECOMP_SPEED) cy = (int16_t)(cy - DECOMP_SPEED);
+            else                          cy = ty;
+
+            decomp_cur_x[slot] = cx;
+            decomp_cur_y[slot] = cy;
+            sa[slot].x = (uint16_t)cx;
+            sa[slot].y = (uint16_t)cy;
+
+            if (cx == tx && cy == ty) {
+                decomp_state[slot] = 2;
+                decompose_arrived++;
+            }
+
+        } else {
+            // Arrived — full sine-wave grid animation
+            uint8_t angle = (uint8_t)(frame_lo2 + col_phase + row_phase);
+            int8_t  sdx   = sine_table[angle];
+            int8_t  sdy   = sine_table[(uint8_t)(angle + 64)];
+            sa[slot].x = (uint16_t)((int16_t)bx + sdx);
+            sa[slot].y = (uint16_t)((int16_t)by + sdy);
+        }
+
+        sa[slot].ctrl = (uint16_t)((slot + pat_base) & 0x7F);
+        sa[slot].prio = 0x0003;
+
+        col++;
+        bx        = (uint16_t)(bx + GRID_STEP_X);
+        col_phase = (uint16_t)(col_phase + 13);
+
+        if (col >= PLEX_COLS) {
+            col       = 0;
+            bx        = BASE_X;
+            col_phase = 0;
+            by        = (uint16_t)(by + GRID_STEP_Y);
+            row_phase = (uint16_t)(row_phase + 23);
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // swap_sprite_batch — CPU-copy 64 patterns into PCG slots 64-127
 ////////////////////////////////////////////////////////////////////////////////
 static void swap_sprite_batch(void)
@@ -323,17 +424,27 @@ void init_sprite_plex(void)
 
 ////////////////////////////////////////////////////////////////////////////////
 // sprite_plex_loop — main demo loop (never returns)
+//
+// Phase sequence: 0 (grid, 360f) -> 1 (circle, 360f) -> 2 (decompose,
+// completion-driven) -> 0 -> ...
 ////////////////////////////////////////////////////////////////////////////////
 void sprite_plex_loop(void)
 {
-    frame_counter  = 0;
-    swap_countdown = SWAP_FRAMES;
-    swap_batch     = 0;
-    pat_counter    = 0;
-    pat_tick       = 0;
-    phase_counter  = PHASE_FRAMES;
-    demo_phase     = 0;
-    circle_rot     = 0;
+    int i;
+
+    frame_counter     = 0;
+    swap_countdown    = SWAP_FRAMES;
+    swap_batch        = 0;
+    pat_counter       = 0;
+    pat_tick          = 0;
+    phase_counter     = PHASE_FRAMES;
+    demo_phase        = 0;
+    circle_rot        = 0;
+    decompose_count   = 0;
+    decompose_arrived = 0;
+    decompose_tick    = 0;
+    for (i = 0; i < PLEX_TOTAL; i++)
+        decomp_state[i] = 0;
 
     for (;;) {
         wait_vblank();
@@ -351,18 +462,56 @@ void sprite_plex_loop(void)
             swap_sprite_batch();
         }
 
-        if (--phase_counter == 0) {
-            phase_counter = PHASE_FRAMES;
-            demo_phase ^= 1;
-            circle_rot = 0;
-        }
-
         if (demo_phase == 0) {
+            // ---- Grid / sine-wave phase ----
+            if (--phase_counter == 0) {
+                phase_counter = PHASE_FRAMES;
+                demo_phase    = 1;
+                circle_rot    = 0;
+            }
             update_all_sprites();
-        } else {
-            if (++circle_rot >= 100)
-                circle_rot = 0;
+
+        } else if (demo_phase == 1) {
+            // ---- Circle rotation phase ----
+            if (++circle_rot >= 100) circle_rot = 0;
+
+            if (--phase_counter == 0) {
+                // Transition to decompose
+                demo_phase        = 2;
+                decompose_count   = 0;
+                decompose_arrived = 0;
+                decompose_tick    = (uint8_t)(DECOMP_LAUNCH - 1); // fire first launch next frame
+                for (i = 0; i < PLEX_TOTAL; i++)
+                    decomp_state[i] = 0;
+            }
             update_circle_sprites();
+
+        } else {
+            // ---- Decompose phase ----
+            if (++circle_rot >= 100) circle_rot = 0;
+
+            // Launch one sprite per DECOMP_LAUNCH frames
+            if (++decompose_tick >= DECOMP_LAUNCH) {
+                decompose_tick = 0;
+                if (decompose_count < PLEX_TOTAL) {
+                    uint8_t s   = decompose_count;
+                    uint8_t pos = (uint8_t)(s + circle_rot);
+                    if (pos >= 100) pos = (uint8_t)(pos - 100);
+                    // Snapshot current circle position as starting point
+                    decomp_cur_x[s] = (int16_t)circle_lut[pos][0];
+                    decomp_cur_y[s] = (int16_t)circle_lut[pos][1];
+                    decomp_state[s] = 1;   // start flying
+                    decompose_count++;
+                }
+            }
+
+            update_decompose_sprites();
+
+            // Phase ends when every sprite has arrived at its grid target
+            if (decompose_arrived >= PLEX_TOTAL) {
+                demo_phase    = 0;
+                phase_counter = PHASE_FRAMES;
+            }
         }
 
         update_font_display();
