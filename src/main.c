@@ -10,6 +10,17 @@
 extern void init_sprite_plex(void);
 extern void sprite_plex_loop(void);
 
+// do_init — called exactly once by start.s, immediately after the binary is
+// loaded from floppy, BSS is cleared, and hardware interrupts are disabled.
+// It is NOT called on soft-restart (the 'restart' symbol in start.s jumps
+// directly to do_loader, bypassing this function).
+//
+// Use this for one-time-only initialisation that must survive a soft-restart:
+// e.g. detecting installed RAM, reading hardware ID registers, or seeding
+// persistent state that do_loader should not reinitialise on restart.
+//
+// This demo reinitialises everything in do_loader, so no first-boot-only
+// setup is required here.
 void do_init(void) {}
 
 void do_loader(void)
