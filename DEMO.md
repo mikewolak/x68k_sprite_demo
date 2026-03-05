@@ -10,17 +10,18 @@ sprite-based game development on this platform.
 ## Table of Contents
 
 1. [What This Is](#what-this-is)
-2. [Hardware Under Test](#hardware-under-test)
-3. [Demo Phases](#demo-phases)
-4. [Project Structure](#project-structure)
-5. [Build System](#build-system)
-6. [Toolchain Setup](#toolchain-setup)
-7. [Running the Demo](#running-the-demo)
-8. [Technical Architecture](#technical-architecture)
-9. [Key Algorithms](#key-algorithms)
-10. [Hard-Won Fixes and Gotchas](#hard-won-fixes-and-gotchas)
-11. [Using This as a Game Foundation](#using-this-as-a-game-foundation)
-12. [Extending the Demo](#extending-the-demo)
+2. [Track Loader Boot Mechanism](#track-loader-boot-mechanism)
+3. [Hardware Under Test](#hardware-under-test)
+4. [Demo Phases](#demo-phases)
+5. [Project Structure](#project-structure)
+6. [Build System](#build-system)
+7. [Toolchain Setup](#toolchain-setup)
+8. [Running the Demo](#running-the-demo)
+9. [Technical Architecture](#technical-architecture)
+10. [Key Algorithms](#key-algorithms)
+11. [Hard-Won Fixes and Gotchas](#hard-won-fixes-and-gotchas)
+12. [Using This as a Game Foundation](#using-this-as-a-game-foundation)
+13. [Extending the Demo](#extending-the-demo)
 
 ---
 
@@ -46,6 +47,159 @@ The goal was to:
 - Establish correct register access patterns, coordinate systems, and timing
   constraints verified against MAME emulation
 - Create a reusable, well-understood codebase to build a real game from
+
+---
+
+## Track Loader Boot Mechanism
+
+This demo does **not** use the X68000 FAT12 filesystem to load itself. Instead
+it uses a classic demoscene technique: a **track loader**. The binary is written
+directly to the start of each floppy track with no directory entry, no FAT
+chain, and no filesystem metadata beyond a valid boot sector header. Loading is
+done by the program's own bootstrap code using raw BIOS sector reads, one track
+at a time.
+
+This has two advantages for a bare-metal demo or game: the binary loads as fast
+as the drive can spin (no FAT traversal overhead), and there is no dependency on
+the filesystem being intact or even present.
+
+### How the X68000 IPL ROM Boots
+
+When the X68000 powers on, the IPL ROM reads the first sector (512 or 1024
+bytes, depending on media) of the inserted floppy into memory at `0x2000` and
+inspects the very first byte. If it is `$60` (the M68K short branch opcode
+`BRA.S`), the IPL ROM treats the sector as a valid boot sector and jumps to
+`0x2000` to execute it. Any other first byte causes the IPL ROM to abort and
+display an error.
+
+The binary produced by this project starts with exactly this two-byte sequence
+in `start.s`:
+
+```asm
+_start:
+    dc.b $60                          ; BRA.S — IPL ROM boot signature
+    dc.b ((start_code - _start) - 2) ; branch displacement over the BPB area
+```
+
+The short branch jumps forward over 60 bytes of reserved space (the BPB —
+BIOS Parameter Block) directly to `start_code`, which is the real bootstrap
+entry point. The BPB area is overwritten by `makexdf` with the correct disk
+format parameters after compilation.
+
+### BPB and Media ID
+
+Bytes 2–63 of the boot sector hold the BPB, a standard structure that
+describes the floppy geometry. `makexdf.c` patches this area with a
+pre-computed template (`id_xdf` or `id_2hq`) matching the target format:
+
+| Format | Total size | Sectors/track | Sector size | Tracks |
+|--------|-----------|---------------|-------------|--------|
+| XDF | 1,261,568 B | 8 per side | 1024 bytes | 77 |
+| 2HQ | 1,474,560 B | 18 per side | 512 bytes | 80 |
+
+Critically, byte `$15` of the BPB is the **media ID byte** (`$FE` for XDF,
+`$F0` for 2HQ). The bootstrap reads this at runtime to determine the sector
+size and therefore how many sectors make up one track — it uses this to
+calculate the disk address of each successive 4 KB chunk:
+
+```asm
+move.b (_start+$15,pc),d5   ; read media ID from own boot sector
+lsr.b  #3,d5                ; shift to extract sector-size class
+and.b  #$3,d5               ; mask to 2-bit field
+ror.l  #8,d5                ; place into high word as sector address component
+addq.l #1,d5                ; start at sector 1 (sector 0 is the boot sector)
+```
+
+This single media ID byte is all the bootstrap needs to support both floppy
+formats from the same binary.
+
+### Track Layout — One 4 KB Chunk Per Track
+
+The core trick is in `makexdf.c`. After computing the checksum, it
+**interleaves** the binary so that each 4 KB piece lands at the start of a
+separate track, leaving the rest of that track empty:
+
+```c
+// Place 4K chunk i at the beginning of track i, one side only
+memmove(image + (bytes_per_track * i), image + (0x1000 * i), 0x1000);
+memset (image + (0x1000 * i), 0, 0x1000);   // zero out the old location
+```
+
+For XDF (`bytes_per_track = 16,384`): chunk 1 lands at byte 16384 (track 1),
+chunk 2 at byte 32768 (track 2), and so on. For 2HQ (`bytes_per_track =
+18,432`): the same logic applies with 18,432-byte track strides.
+
+The result is that the binary occupies only the **first sector of each track**,
+on one side of the disk. The rest of each track is zero-filled. This is wasteful
+of disk space but simple and works identically on both media formats.
+
+### The Bootstrap Load Loop
+
+Once the IPL ROM hands control to the boot sector at `0x2000`, the bootstrap
+runs its own loader loop. It already has the first 4 KB (track 0) in memory.
+It then reads every remaining track into successive 4 KB windows:
+
+```asm
+exe_load_loop:
+    move.l a6,a1        ; a1 = destination (starts at 0x2000, advances 4K each)
+    move.w d7,d1        ; d1 = boot device number (from _BOOTINF BIOS call)
+    move.l d5,d2        ; d2 = disk address (track 1, sector 1, advancing by track)
+    move.l #$1000,d3    ; d3 = 4096 bytes
+    moveq  #$46,d0      ; _B_READ BIOS call
+    trap   #15
+
+    lea    ($1000,a6),a6    ; advance destination pointer by 4K
+    add.l  #$10000,d5       ; advance disk address by one full track
+    dbra   d6,exe_load_loop ; repeat for all remaining chunks
+```
+
+`d6` is initialised to `(binary_size / 4096) - 1` so the loop runs exactly
+the right number of times. `d7` holds the boot device number obtained from the
+`_BOOTINF` BIOS call earlier, so the loader reads from whichever drive the
+machine booted from.
+
+After the last chunk is read, the floppy is ejected (`_B_EJECT`), the
+checksum is verified, BSS is zeroed with `memset`, all hardware interrupts are
+disabled (`move.w #$2700,sr`), and control passes to `do_init` then
+`do_loader`.
+
+### Checksum
+
+`makexdf.c` computes a rotating-left add-accumulate checksum over the entire
+padded binary and patches the result into offset `$40` of the boot sector
+(within the BPB area) such that the same checksum loop run over the loaded
+binary produces zero:
+
+```c
+// Back-calculate the patch value so that the forward checksum totals zero
+for (i = binsize; ; ) {
+    i -= 4;
+    sum = (sum >> 1) | (sum << 31);   // rotate right
+    if (i == patchpoint) {
+        put32msb(image + patchpoint, sum - sumatpatch);
+        break;
+    }
+    sum -= get32msb(image + i);
+}
+```
+
+The bootstrap's checksum loop mirrors this exactly. A mismatch halts and prints
+`Checksum failed; program is corrupt or didn't load properly` — the only human-
+readable string in the entire binary.
+
+### Soft Restart Without Reloading
+
+`start.s` includes a `loaded_flag` byte in the boot sector area. After the
+first successful load, bit 0 of this flag is set. If the program ever jumps
+back to `_start` (e.g. from the `restart` symbol), the bootstrap detects the
+flag and branches directly to `skip_loading`, bypassing the entire floppy load
+sequence. The program re-runs from the top of `do_loader` with no disk I/O.
+
+This is why `do_init` and `do_loader` are separate entry points: `do_init` runs
+only on the cold first load; `do_loader` runs on every start including restarts.
+Any hardware state that must persist across a restart (and therefore must not be
+re-initialised) belongs in `do_init`. Everything this demo needs is safe to
+reinitialise, so `do_init` is empty.
 
 ---
 
