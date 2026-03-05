@@ -2,7 +2,7 @@
 // sprite_plex.c — X68000 128-sprite PCG multiplexer demo (C99 port)
 //
 // Compile-time resolution via DEMO_RES (set by Makefile):
-//   DEMO_RES=256: 7x7 grid = 49 sprites, 256x256 31kHz
+//   DEMO_RES=256: 10x10 grid = 100 sprites, 256x256 31kHz
 //   DEMO_RES=512: 15x8 grid = 120 sprites, 512x512 31kHz
 //
 // Sprite slot layout:
@@ -28,22 +28,23 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Grid layout — resolved at compile time from DEMO_RES
 ////////////////////////////////////////////////////////////////////////////////
-#define GRID_STEP   32      // pixel spacing between grid positions
 #define FONT_STEP   16      // pixel spacing between font character sprites
 #define FONT_REG_Y  18      // sprite reg Y for HUD row (screen y=2)
 
 #if DEMO_RES == 256
-// 256x256: 7x7 grid = 49 sprites
-// Centre: BASE_screen = display/2 - (cols-1)*step/2 = 128-96 = 32 -> reg = 32+16 = 48
-#define PLEX_COLS   7
-#define PLEX_ROWS   7
-#define PLEX_TOTAL  49
-#define BASE_X      48
-#define BASE_Y      48
+// 256x256: 10x10 grid = 100 sprites, GRID_STEP=20
+// Centre: screen/2 - (cols-1)*step/2 = 128-90 = 38 -> reg = 38+16 = 54
+#define GRID_STEP   20
+#define PLEX_COLS   10
+#define PLEX_ROWS   10
+#define PLEX_TOTAL  100
+#define BASE_X      54
+#define BASE_Y      54
 #define FONT_REG_X  208     // flush right: screen x=192, reg x=208
 #elif DEMO_RES == 512
-// 512x512: 15x8 grid = 120 sprites
+// 512x512: 15x8 grid = 120 sprites (HW max with HUD at 120-123), GRID_STEP=32
 // X: 256 - 14*32/2 = 32 -> reg = 48; Y: 256 - 7*32/2 = 144 -> reg = 160
+#define GRID_STEP   32
 #define PLEX_COLS   15
 #define PLEX_ROWS   8
 #define PLEX_TOTAL  120
