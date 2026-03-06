@@ -61,22 +61,22 @@ start_code:
     move.l d1,d7
 
     #
-    # Get the executable size in d6
+    # Get the executable size in d6.
+    # XDF: 8KB per half-track (8 sectors x 1024 bytes per side).
+    # d6 = (binary_size / 8192) - 1  =>  right-shift by 13 bits.
     #
     move.l #((__bss_start-_start)-1),d6
     lsr.l #8,d6
-    lsr.l #4,d6 /* d6 = number of 4K sections, minus one */
+    lsr.l #5,d6 /* d6 = number of 8KB half-track chunks, minus one */
 
     #
-    # Get the starting location in d5
-    # (either 512 or 1024-byte sectors, based on media ID)
+    # Starting disk address for XDF (both sides):
+    #   bits [31:24] = sector-size code 3 = 1024-byte sectors
+    #   bits [23:16] = cylinder (0-76)
+    #   bits  [15:8] = head (0 or 1, toggled each chunk)
+    #   bits   [7:0] = sector number (1-based, always 1)
     #
-    clr.l d5
-    move.b (_start+$15,pc),d5 /* $FE=xdf, $F0=2HQ */
-    lsr.b #3,d5
-    and.b #$3,d5
-    ror.l #8,d5
-    addq.l #1,d5 /* start at sector #1 */
+    move.l #$03000001,d5 /* XDF: cyl 0, head 0, sector 1 */
 
     #
     # Destination pointer in a6
@@ -84,18 +84,25 @@ start_code:
     move.w #$2000,a6
 
     #
-    # Read the rest of the executable
+    # Load loop: read 8KB per half-track, toggle head each chunk,
+    # advance cylinder every two chunks (after head 1 -> head 0 wrap).
+    # Both sides of all 77 cylinders = full 1.2MB XDF capacity.
     #
 exe_load_loop:
     move.l a6,a1     /* a1 = destination pointer */
     move.w d7,d1     /* d1 = device */
-    move.l d5,d2     /* d2 = disk location */
-    move.l #$1000,d3 /* d3 = size, 4K at a time */
+    move.l d5,d2     /* d2 = disk address */
+    move.l #$2000,d3 /* d3 = 8192 bytes (8 sectors x 1024) */
     moveq #$46,d0    /* _B_READ */
     trap #15
 
-    lea ($1000,a6),a6 /* advance destination */
-    add.l #$10000,d5  /* advance to the next track */
+    lea ($2000,a6),a6         /* advance destination by 8KB */
+
+    eor.l #$100,d5            /* toggle head bit: 0->1 or 1->0 */
+    btst #8,d5                /* test head bit after toggle */
+    bne exe_load_loop_next    /* head is now 1: same cylinder, no advance */
+    add.l #$10000,d5          /* head wrapped 1->0: advance to next cylinder */
+exe_load_loop_next:
 
     dbra d6,exe_load_loop
 
@@ -110,8 +117,8 @@ exe_load_loop:
     # Checksum what we just loaded
     #
     lea (_start,pc),a0
-    move.l #($3FF+__bss_start-_start),d0
-    and.w #$FC00,d0
+    move.l #($1FFF+__bss_start-_start),d0
+    and.l #$FFFFE000,d0        /* align to 8KB (use 32-bit AND for large binaries) */
     lea (a0,d0.l),a1
     clr.l d0
 checksum_loop:

@@ -154,6 +154,16 @@ void bg_draw_pcg_embossed(int gx, int gy, const uint8_t *pcg,
 // This is an init-time operation; it runs once and need not be fast.
 void bg_tile_region(int tile_w, int tile_h);
 
+// bg_tile_region_dma — DMA-accelerated version of bg_tile_region.
+//
+// Pass 1 (CPU): tile horizontally across tile_h source rows.
+// Pass 2 (DMA): HD63450 channel 2 linked-array cascade copies rows downward
+//   in a single DMA call — same mechanism as gvram_fill_dma in x68k_video.c.
+//
+// Preconditions: same as bg_tile_region.
+// Call this instead of bg_tile_region for instant off-screen construction.
+void bg_tile_region_dma(int tile_w, int tile_h);
+
 ////////////////////////////////////////////////////////////////////////////////
 // Hardware scroll
 //

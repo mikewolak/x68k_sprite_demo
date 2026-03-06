@@ -1,9 +1,11 @@
 ################################################################################
-# X68000 Sprite Plex Demo (C99 port) - Makefile
-# 128 PCG sprites with 64-sprite batch swap every ~4 seconds.
+# X68000 Full-Disk Track Loader - Makefile
+#
+# Builds a bootable XDF floppy image using a full-disk track loader.
+# The loader reads 8KB per half-track (one side of each cylinder) and
+# alternates head 0/1 across all 77 cylinders, giving ~1.2MB payload capacity.
 #
 # Pure C99 port: only start.s and memsize.s remain as assembly.
-# All video init, sprite plex logic, and hardware helpers are in C.
 ################################################################################
 
 PROJECT = sprite_plex
@@ -18,7 +20,6 @@ TOOLS_DIR = tools
 ELF = $(BUILD_DIR)/$(PROJECT).elf
 BIN = $(BUILD_DIR)/$(PROJECT).bin
 XDF = $(BUILD_DIR)/$(PROJECT).xdf
-HQ  = $(BUILD_DIR)/$(PROJECT).2hq
 
 PREFIX = m68k-elf
 CC = $(PREFIX)-gcc
@@ -76,7 +77,7 @@ OTHER_OBJS = $(filter-out $(START_OBJ),$(ALL_OBJS))
 
 .PHONY: all clean setup run sprites
 
-all: setup sprites $(XDF) $(HQ)
+all: setup sprites $(XDF)
 
 run: all
 	mame x68000 -flop1 $(XDF) -rompath roms -skip_gameinfo -window -nomaximize -resolution 1024x768 -bios ipl10
@@ -125,7 +126,7 @@ $(BIN): $(ELF)
 	@BSS_START=$$($(NM) $< | grep __bss_start | awk '{print "0x" $$1}') && \
 	START_ADDR=$$($(NM) $< | grep " _start$$" | awk '{print "0x" $$1}') && \
 	SIZE=$$(($$BSS_START - $$START_ADDR)) && \
-	ROUNDED_SIZE=$$((($$SIZE + 0x3FF) & 0xFC00)) && \
+	ROUNDED_SIZE=$$(( ($$SIZE + 0x1FFF) & ~0x1FFF )) && \
 	CURRENT_SIZE=$$(wc -c < $@ | tr -d ' ') && \
 	PAD_SIZE=$$(($$ROUNDED_SIZE - $$CURRENT_SIZE)) && \
 	if [ $$PAD_SIZE -gt 0 ]; then \
@@ -139,10 +140,6 @@ $(TOOLS_DIR)/makexdf: $(TOOLS_DIR)/makexdf.c
 
 $(XDF): $(BIN) $(TOOLS_DIR)/makexdf
 	@echo "Creating XDF disk image..."
-	@$(TOOLS_DIR)/makexdf $< $@
-
-$(HQ): $(BIN) $(TOOLS_DIR)/makexdf
-	@echo "Creating 2HQ disk image..."
 	@$(TOOLS_DIR)/makexdf $< $@
 
 ################################################################################

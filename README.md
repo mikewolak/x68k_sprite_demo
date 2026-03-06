@@ -11,7 +11,7 @@ this platform.
 ## Table of Contents
 
 1. [What This Is](#what-this-is)
-2. [Track Loader Boot Mechanism](#track-loader-boot-mechanism)
+2. [Track Loader Boot Mechanism](#track-loader-boot-mechanism) · [The `makexdf` Tool](#the-makexdf-tool)
 3. [Hardware Under Test](#hardware-under-test)
 4. [Demo Phases](#demo-phases)
 5. [GVRAM Background Layer](#gvram-background-layer)
@@ -91,86 +91,86 @@ format parameters after compilation.
 ### BPB and Media ID
 
 Bytes 2–63 of the boot sector hold the BPB, a standard structure that
-describes the floppy geometry. `makexdf.c` patches this area with a
-pre-computed template (`id_xdf` or `id_2hq`) matching the target format:
+describes the floppy geometry. `makexdf.c` patches this area with the XDF
+parameter block template (`id_xdf`) after compilation.
 
-| Format | Total size | Sectors/track | Sector size | Tracks |
-|--------|-----------|---------------|-------------|--------|
-| XDF | 1,261,568 B | 8 per side | 1024 bytes | 77 |
-| 2HQ | 1,474,560 B | 18 per side | 512 bytes | 80 |
+| Format | Total size | Geometry | Sector size | Capacity |
+|--------|-----------|----------|-------------|---------|
+| XDF | 1,261,568 B | 77 cyl × 2 heads × 8 sectors | 1024 bytes | ~1.2 MB |
 
-Critically, byte `$15` of the BPB is the **media ID byte** (`$FE` for XDF,
-`$F0` for 2HQ). The bootstrap reads this at runtime to determine the sector
-size and therefore how many sectors make up one track — it uses this to
-calculate the disk address of each successive 4 KB chunk:
+Byte `$15` of the BPB is the media ID byte (`$FE` for XDF). The bootstrap no
+longer reads it at runtime — the disk geometry is hardcoded for XDF. The BPB
+is patched by `makexdf` purely for compatibility with any software that
+inspects the format block.
 
-```asm
-move.b (_start+$15,pc),d5   ; read media ID from own boot sector
-lsr.b  #3,d5                ; shift to extract sector-size class
-and.b  #$3,d5               ; mask to 2-bit field
-ror.l  #8,d5                ; place into high word as sector address component
-addq.l #1,d5                ; start at sector 1 (sector 0 is the boot sector)
+### Track Layout — Full Disk, Both Sides
+
+XDF is a 77-cylinder, double-sided format. Each side of each cylinder holds 8
+sectors of 1024 bytes = **8 KB per half-track**. The loader reads one full
+side per `_B_READ` call, alternating heads across all 77 cylinders. Total
+capacity loaded: 77 × 2 × 8 KB = **1,232 KB**.
+
+The image layout maps directly — no interleaving is needed:
+
+```
+[0     .. 8191 ] = cyl 0, head 0  (sectors 1–8)
+[8192  .. 16383] = cyl 0, head 1  (sectors 1–8)
+[16384 .. 24575] = cyl 1, head 0
+[24576 .. 32767] = cyl 1, head 1
+...
 ```
 
-This single media ID byte is all the bootstrap needs to support both floppy
-formats from the same binary.
-
-### Track Layout — One 4 KB Chunk Per Track
-
-The core trick is in `makexdf.c`. After computing the checksum, it
-**interleaves** the binary so that each 4 KB piece lands at the start of a
-separate track, leaving the rest of that track empty:
-
-```c
-// Place 4K chunk i at the beginning of track i, one side only
-memmove(image + (bytes_per_track * i), image + (0x1000 * i), 0x1000);
-memset (image + (0x1000 * i), 0, 0x1000);   // zero out the old location
-```
-
-For XDF (`bytes_per_track = 16,384`): chunk 1 lands at byte 16384 (track 1),
-chunk 2 at byte 32768 (track 2), and so on. For 2HQ (`bytes_per_track =
-18,432`): the same logic applies with 18,432-byte track strides.
-
-The result is that the binary occupies only the **first sector of each track**,
-on one side of the disk. The rest of each track is zero-filled. This is wasteful
-of disk space but simple and works identically on both media formats.
+The flat binary is written into the image buffer sequentially. Chunk `i` of
+the binary (at byte offset `i × 8192`) lands exactly at image offset
+`i × 8192`, which is where the BIOS delivers it at load time. No `memmove`
+or interleave step is needed.
 
 ### The Bootstrap Load Loop
 
 Once the IPL ROM hands control to the boot sector at `0x2000`, the bootstrap
-runs its own loader loop. It already has the first 4 KB (track 0) in memory.
-It then reads every remaining track into successive 4 KB windows:
+runs its own loader loop. It already has the first 8 KB (cyl 0, head 0) in
+memory. It then reads every remaining half-track, alternating heads and
+advancing the cylinder after completing both sides:
 
 ```asm
 exe_load_loop:
-    move.l a6,a1        ; a1 = destination (starts at 0x2000, advances 4K each)
-    move.w d7,d1        ; d1 = boot device number (from _BOOTINF BIOS call)
-    move.l d5,d2        ; d2 = disk address (track 1, sector 1, advancing by track)
-    move.l #$1000,d3    ; d3 = 4096 bytes
-    moveq  #$46,d0      ; _B_READ BIOS call
+    move.l a6,a1            ; a1 = destination pointer
+    move.w d7,d1            ; d1 = boot device number
+    move.l d5,d2            ; d2 = disk address [size][cyl][head][sector]
+    move.l #$2000,d3        ; d3 = 8192 bytes (8 sectors × 1024)
+    moveq  #$46,d0          ; _B_READ BIOS call
     trap   #15
 
-    lea    ($1000,a6),a6    ; advance destination pointer by 4K
-    add.l  #$10000,d5       ; advance disk address by one full track
-    dbra   d6,exe_load_loop ; repeat for all remaining chunks
+    lea    ($2000,a6),a6    ; advance destination by 8KB
+
+    eor.l  #$100,d5         ; toggle head bit: 0→1 or 1→0
+    btst   #8,d5            ; test head bit after toggle
+    bne    exe_load_loop_next ; head is now 1: stay on same cylinder
+    add.l  #$10000,d5       ; head wrapped 1→0: advance to next cylinder
+exe_load_loop_next:
+    dbra   d6,exe_load_loop
 ```
 
-`d6` is initialised to `(binary_size / 4096) - 1` so the loop runs exactly
-the right number of times. `d7` holds the boot device number obtained from the
-`_BOOTINF` BIOS call earlier, so the loader reads from whichever drive the
-machine booted from.
+The disk address in `d5` is a packed longword:
+- `bits [31:24]` = sector-size code (`$03` = 1024 bytes)
+- `bits [23:16]` = cylinder number (0–76)
+- `bits  [15:8]` = head (0 or 1, toggled each chunk)
+- `bits   [7:0]` = sector number (always 1 — the BIOS reads all 8 sequentially)
 
-After the last chunk is read, the floppy is ejected (`_B_EJECT`), the
-checksum is verified, BSS is zeroed with `memset`, all hardware interrupts are
-disabled (`move.w #$2700,sr`), and control passes to `do_init` then
-`do_loader`.
+`d6` is initialised to `(binary_size / 8192) - 1` so the loop runs exactly
+the right number of times. After the last half-track is read, the floppy is
+ejected (`_B_EJECT`), the checksum is verified, BSS is zeroed, all hardware
+interrupts are disabled (`move.w #$2700,sr`), and control passes to `do_init`
+then `do_loader`.
 
 ### Checksum
 
-`makexdf.c` computes a rotating-left add-accumulate checksum over the entire
-padded binary and patches the result into offset `$40` of the boot sector
-(within the BPB area) such that the same checksum loop run over the loaded
-binary produces zero:
+`makexdf.c` pads the binary to an 8 KB boundary (matching the half-track chunk
+size) and then computes a rotating-left add-accumulate checksum over the entire
+padded binary, patching the result into offset `$40` of the boot sector such
+that the same checksum loop run over the loaded binary produces zero. The tool
+verifies this itself — a non-zero result aborts the build with an error rather
+than silently producing a corrupt image.
 
 ```c
 // Back-calculate the patch value so that the forward checksum totals zero
@@ -202,6 +202,59 @@ only on the cold first load; `do_loader` runs on every start including restarts.
 Any hardware state that must persist across a restart (and therefore must not be
 re-initialised) belongs in `do_init`. Everything this demo needs is safe to
 reinitialise, so `do_init` is empty.
+
+### The `makexdf` Tool
+
+`tools/makexdf.c` is a host-side C program that converts the flat compiled
+binary into a bootable XDF floppy image. It is compiled from source by the
+Makefile using the host `gcc` and run as part of every build.
+
+**What it does, in order:**
+
+1. **Reads** the raw binary produced by `m68k-elf-objcopy`
+2. **Patches** bytes 2–63 of the image with the XDF BPB template (`id_xdf`),
+   giving the disk the correct geometry description
+3. **Pads** the binary to the next 8 KB boundary (matching the half-track
+   chunk size the loader reads per `_B_READ` call)
+4. **Back-calculates** a checksum patch value at offset `$40` such that a
+   forward rotating-left add pass over the entire padded binary sums to zero
+5. **Verifies** the checksum in-tool — the build fails with a non-zero result
+   rather than producing a silently corrupt image
+6. **Writes** the full 1,261,568-byte XDF image (the binary occupies the low
+   end; the rest is zero-filled)
+7. **Prints** an ASCII disk map showing track utilisation across all 154
+   half-tracks (77 cylinders × 2 heads)
+
+After every successful build you see a map like this:
+
+```
++-------------------------------------------------------+
+|  XDF DISK MAP  --  sprite_plex.xdf                    |
+|  77 cyls x 2 heads x 8 KB/side = 1,232 KB capacity    |
+|  # = 8 KB half-track used    . = free                 |
++-----+---+---+-----+---+---+-----+---+---+-----+---+---+
+| CYL | 0 | 1 | CYL | 0 | 1 | CYL | 0 | 1 | CYL | 0 | 1 |
++-----+---+---+-----+---+---+-----+---+---+-----+---+---+
+|   0 | # | # |  20 | . | . |  40 | . | . |  60 | . | . |
+|   1 | # | # |  21 | . | . |  41 | . | . |  61 | . | . |
+|   2 | # | # |  22 | . | . |  42 | . | . |  62 | . | . |
+|   3 | . | . |  23 | . | . |  43 | . | . |  63 | . | . |
+|   4 | . | . |  24 | . | . |  44 | . | . |  64 | . | . |
+...
++-----+---+---+-----+---+---+-----+---+---+-----+---+---+
+|  Used:   6 / 154 half-tracks    48 KB    3.9%         |
+|  Free: 148 / 154 half-tracks  1184 KB   96.1%         |
++-------------------------------------------------------+
+```
+
+Each `#` represents one 8 KB half-track occupied by the payload binary. Each
+`.` is free disk space. The summary line shows exactly how much of the disk's
+1,232 KB capacity is consumed — useful at a glance when adding large data
+assets like music, sample data, or extra sprite banks.
+
+**Capacity headroom:** The XDF format gives ~1.2 MB of usable payload space.
+The demo binary at ~48 KB uses less than 4% of it, leaving over 1.1 MB free
+for game data, level maps, music sequences, and additional PCG tiles.
 
 ---
 
@@ -395,7 +448,7 @@ void bg_set_pal(int idx, uint16_t grb555);
 void bg_load_pal(const uint16_t *src, int start, int count);
 void bg_grey_ramp(int start, int count);  // linear dark→bright grey ramp
 
-// Fill
+// Fill (see also gvram_fill_dma() in x68k_video.h for DMA-accelerated clear)
 void bg_fill(uint8_t color_idx);          // CPU-fill 512×512 GVRAM
 
 // Pixel (inline, zero-overhead)
@@ -408,6 +461,9 @@ void bg_draw_pcg_embossed(int gx, int gy, const uint8_t *pcg,
 
 // Tiling (no division/modulo — pure wrap-counter)
 void bg_tile_region(int tile_w, int tile_h);
+
+// Tiling — DMA-accelerated (HD63450 linked-array cascade, single DMA call)
+void bg_tile_region_dma(int tile_w, int tile_h);
 
 // Hardware scroll (CRTC R12/R13, toroidal wrap 0–511)
 void bg_set_scroll(uint16_t x, uint16_t y);
@@ -488,23 +544,31 @@ CPU cost is **one word write per scanline**; no pixel data is ever rewritten.
 
 ### Tiling
 
-Once `bg_fill(0)` and the palette are set, the 32×32 CAFE tile is drawn
-into GVRAM at (0, 0). `bg_tile_region(32, 32)` then replicates it across
-the full 512×512 GVRAM canvas using two wrap-counter passes — no division or
-modulo anywhere:
+Once the 32×32 CAFE tile is drawn into GVRAM at (0, 0),
+`bg_tile_region_dma(32, 32)` replicates it across the full 512×512 canvas.
 
-- **Pass 1 — horizontal:** For each of the 32 source rows, copy the 32 source
-  pixels rightward to column 511, resetting the source X counter every 32
-  pixels. Result: 512 ÷ 32 = 16 copies per row.
-- **Pass 2 — vertical:** Copy the 32 completed rows downward to row 511,
-  resetting the source Y counter every 32 rows. Result: 512 ÷ 32 = 16 sets
-  of rows.
+- **Pass 1 — horizontal (CPU):** For each of the 32 source rows, the 32
+  source pixels are copied rightward to column 511 using a wrap counter.
+  Result: 512 ÷ 32 = 16 tile copies per row. No division or modulo.
+- **Pass 2 — vertical (DMA):** A single HD63450 channel 2 DMA call using a
+  480-entry linked-array chain cascades the 32 completed rows downward across
+  the remaining 480 rows in one shot.
 
-Because 512 is exactly divisible by 32, the tiling is perfectly seamless —
-no partial tile exists anywhere in the 512×512 canvas.
+The DMA cascade exploits the same mechanism as `gvram_fill_dma`: the DAR
+(source pointer) auto-increments through GVRAM as each chain entry completes.
+Chain entry `i` reads row `i` (already correct from either the original tile
+or a prior cascade copy) and writes it to row `32 + i`. Because the DMA
+processes the chain sequentially, each newly written row becomes the correct
+source for the chain entry 32 positions later — the tile pattern propagates
+naturally to fill all 512 rows.
 
-This is a one-time init operation that runs once at startup, before the main
-loop begins. No tiling CPU cost occurs per-frame.
+Because 512 is exactly divisible by 32, the tiling is perfectly seamless with
+no partial tile anywhere in the 512×512 canvas.
+
+The background is constructed with **GVRAM hidden** (`VC_R2 = 0x00C0`,
+bit 0 off) so nothing is visible on screen during the fill, draw, and tile
+sequence. Once complete, `VC_R2 = 0x00C1` reveals the layer — the fully-tiled
+background appears in a single frame with no visible construction.
 
 ### How the Two Effects Combine
 
@@ -562,13 +626,18 @@ the end of the main loop.
 ### Typical Initialisation Sequence
 
 ```c
-bg_fill(0);                                      // clear GVRAM to colour 0
-bg_grey_ramp(1, 15);                             // palette entries 1–15 = grey
+REG16(VC_R2) = 0x00C0;        // hide GVRAM layer during construction
+
+gvram_fill_dma(0);             // DMA-clear 512×512 GVRAM to colour 0
+bg_grey_ramp(1, 15);           // palette entries 1–15 = grey ramp
 bg_draw_pcg_embossed( 0,  0, FONT_PCG(12), 15, 8, 1, 0);  // C
 bg_draw_pcg_embossed(16,  0, FONT_PCG(10), 15, 8, 1, 0);  // A
 bg_draw_pcg_embossed( 0, 16, FONT_PCG(15), 15, 8, 1, 0);  // F
 bg_draw_pcg_embossed(16, 16, FONT_PCG(14), 15, 8, 1, 0);  // E
-bg_tile_region(32, 32);
+bg_tile_region_dma(32, 32);    // DMA cascade tile to full 512×512
+
+init_hblank();                 // install HBlank ISR before reveal
+REG16(VC_R2) = 0x00C1;        // reveal — full background appears instantly
 
 // Once per VBlank in the main loop:
 bg_scroll_step(1, 1);
@@ -603,7 +672,7 @@ x68_sprite_plex_c/
 │   └── font_palette.s          Font palette (white on transparent)
 ├── tools/
 │   ├── convert_sprites.py      PNG → PCG assembler data converter
-│   └── makexdf.c               XDF/2HQ floppy image creator
+│   └── makexdf.c               XDF floppy image builder (BPB patch, checksum, disk map)
 ├── cfg/
 │   └── x68000.cfg              MAME configuration (floppy path, display)
 ├── roms/
@@ -627,7 +696,7 @@ The Makefile handles the complete pipeline from C/asm sources to bootable
 floppy image:
 
 ```
-make            # build sprite_plex.xdf and sprite_plex.2hq (256×256 mode)
+make            # build sprite_plex.xdf (256×256 mode)
 make DEMO_RES=512x512   # build in 512×512 mode (120 sprites, 15×8 grid)
 make run        # build + launch in MAME
 make sprites    # regenerate PCG data from spritesheet_16x16.png
@@ -640,9 +709,11 @@ make clean      # wipe obj/ and build/
 2. `m68k-elf-gcc` compiles all `src/*.c` files to `obj/*.o`
 3. `m68k-elf-ld` links everything at `0x2000` (the X68000 load address),
    garbage-collects unused sections, and produces `sprite_plex.elf`
-4. `m68k-elf-objcopy` strips the ELF to a raw binary, padded to a 1 KB boundary
-5. `tools/makexdf` wraps the binary into an XDF floppy image with the correct
-   media ID byte, sector layout, and checksum so the X68000 IPL ROM accepts it
+4. `m68k-elf-objcopy` strips the ELF to a raw binary, padded to an 8 KB
+   boundary (matching the loader's half-track chunk size)
+5. `tools/makexdf` (see [The `makexdf` Tool](#the-makexdf-tool)) patches the
+   BPB, computes the checksum, writes the full 1,261,568-byte XDF image, and
+   prints the ASCII disk map
 
 **Compiler flags of note:**
 
@@ -970,7 +1041,7 @@ is what is already proven and ready to use.
 
 | Component | Status |
 |---|---|
-| Boot loader (floppy, checksum, BSS clear) | Complete |
+| Full-disk track loader (both sides, 77 cyl, ~1.2 MB capacity) | Complete |
 | Video mode initialisation (256 and 512 modes) | Complete |
 | Sprite attribute RAM layout and addressing | Verified |
 | PCG pattern upload (byte-by-byte) | Verified |
@@ -979,7 +1050,7 @@ is what is already proven and ready to use.
 | Per-scanline HBlank gradient effect | Verified |
 | GVRAM background layer module (x68k_bg) | Complete |
 | Embossed PCG tile drawing | Verified |
-| Full-screen GVRAM tiling (no modulo) | Verified |
+| Full-screen GVRAM tiling — CPU+DMA cascade (no modulo) | Verified |
 | Hardware diagonal scroll (CRTC R12/R13) | Verified |
 | DMA GVRAM fill | Verified |
 | 128-sprite slot management | Demonstrated |
@@ -989,7 +1060,7 @@ is what is already proven and ready to use.
 | 16×16 hex font on PCG sprites | Complete |
 | GRB555 colour conversion tool | Complete |
 | PNG spritesheet → PCG data converter | Complete |
-| XDF/2HQ floppy image builder | Complete |
+| XDF floppy image builder with disk map | Complete |
 
 ### Recommended Architecture for a Game
 
@@ -1106,6 +1177,10 @@ the `.xdf` file to genuine 2HD media. No BIOS calls remain in the binary after
 boot, so it runs identically on real hardware as in MAME — this was an explicit
 design goal.
 
+With ~1.2 MB of payload capacity, the loader can hold a complete small game
+including code, PCG tiles, music data, and sample banks without compressing
+or splitting data across multiple disks.
+
 ---
 
 ## Commit History Summary
@@ -1127,3 +1202,7 @@ design goal.
 | Feature | CAFE tile: embossed 32×32 logo tiled 16×16 across 512×512 GVRAM |
 | Fix | GVRAM scroll: corrected from CRTC R10/R11 (text) to R12/R13 (GVRAM) |
 | Docs | README: full background layer documentation, API reference, tile design |
+| Feature | Full-disk track loader: both sides, 8KB/half-track, 77 cyl, ~1.2MB capacity |
+| Feature | makexdf: drop 2HQ, full XDF capacity, ASCII disk map with track utilisation |
+| Feature | bg_tile_region_dma: HD63450 cascade chain tiles all 512 rows in one DMA call |
+| Feature | Background construction off-screen (VC_R2 hide/reveal) for instant appearance |

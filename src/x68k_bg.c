@@ -194,6 +194,65 @@ void bg_tile_region(int tile_w, int tile_h)
     }
 }
 
+// bg_tile_region_dma — DMA-accelerated version of bg_tile_region.
+//
+// Pass 1 (CPU): tile horizontally across tile_h source rows (same as above).
+// Pass 2 (DMA): cascade-copy rows downward using an HD63450 linked-array chain
+//   on DMA channel 2 — same OCR/SCR/DCR as gvram_fill_dma.
+//
+// DAR starts at GVRAM_BASE (row 0).  Chain entry i copies row i
+// (via DAR auto-increment) to row tile_h+i.  Because entry i runs after
+// entry i-tile_h has already written row i, the pattern cascades: each
+// successive tile_h-row block is a correct copy of the original tile rows.
+//
+// Total chain entries = 512 - tile_h.  For tile_h=32: 480 entries.
+typedef struct {
+    uint32_t mar;
+    uint16_t mtcr;
+} __attribute__((packed)) bg_dma_entry_t;
+
+static bg_dma_entry_t bg_tile_chain[512];
+
+void bg_tile_region_dma(int tile_w, int tile_h)
+{
+    volatile uint8_t *dma = (volatile uint8_t *)DMA2_BASE;
+    int x, y, src_x, i;
+    int entries = 512 - tile_h;
+
+    // Pass 1: CPU horizontal tiling for the source tile rows
+    for (y = 0; y < tile_h; y++) {
+        src_x = 0;
+        for (x = tile_w; x < 512; x++) {
+            GVRAM_PX[y * 512 + x] = GVRAM_PX[y * 512 + src_x];
+            if (++src_x >= tile_w) src_x = 0;
+        }
+    }
+
+    // Pass 2: DMA cascade — entry i reads row i, writes to row tile_h+i
+    for (i = 0; i < entries; i++) {
+        bg_tile_chain[i].mar  = (uint32_t)(GVRAM_BASE + (uint32_t)(tile_h + i) * GVRAM_ROW_BYTES);
+        bg_tile_chain[i].mtcr = 256;
+    }
+
+    dma[DMA_CSR] = 0xFF;
+    dma[DMA_DCR] = 0x08;
+    dma[DMA_OCR] = 0xA9;
+    dma[DMA_SCR] = 0x05;
+    dma[DMA_CCR] = 0x00;
+    dma[DMA_CPR] = 0x03;
+    dma[DMA_MFC] = 0x05;
+    dma[DMA_DFC] = 0x05;
+    dma[DMA_BFC] = 0x05;
+
+    *(volatile uint16_t *)(DMA2_BASE + DMA_BTC) = (uint16_t)entries;
+    *(volatile uint32_t *)(DMA2_BASE + DMA_DAR) = (uint32_t)GVRAM_BASE;
+    *(volatile uint32_t *)(DMA2_BASE + DMA_BAR) = (uint32_t)bg_tile_chain;
+
+    dma[DMA_CCR] |= 0x80;
+    while (!(dma[DMA_CSR] & 0x90));
+    dma[DMA_CSR] = 0xFF;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Hardware scroll
 ////////////////////////////////////////////////////////////////////////////////

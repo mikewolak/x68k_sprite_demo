@@ -37,18 +37,22 @@ void do_loader(void)
 #else
 #error "Unknown DEMO_RES. Build with DEMO_RES=256x256 or DEMO_RES=512x512"
 #endif
+    // Hide GVRAM layer while building background off-screen.
+    REG16(VC_R2) = 0x00C0;
+
     // Background layer — embossed CAFE tile scrolling diagonally.
     // Palette entry 0 is left for the HBlank gradient; 1-15 = grey ramp.
     // The 32×32 tile (4 × 16×16 glyphs) divides 512 exactly (16×16 copies).
-    bg_fill(0);
+    gvram_fill_dma(0);
     bg_grey_ramp(1, 15);
     bg_draw_pcg_embossed( 0,  0, FONT_PCG(12), 15, 8, 1, 0);  // C
     bg_draw_pcg_embossed(16,  0, FONT_PCG(10), 15, 8, 1, 0);  // A
     bg_draw_pcg_embossed( 0, 16, FONT_PCG(15), 15, 8, 1, 0);  // F
     bg_draw_pcg_embossed(16, 16, FONT_PCG(14), 15, 8, 1, 0);  // E
-    bg_tile_region(32, 32);
+    bg_tile_region_dma(32, 32);
 
     init_hblank();       // install HBlank ISR for per-scanline blue gradient
+    REG16(VC_R2) = 0x00C1;   // reveal GVRAM — background appears instantly
     init_sprite_plex();
     sprite_plex_loop();
     while (1);
