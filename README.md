@@ -352,7 +352,13 @@ edge). The demo uses:
 
 ### CRTC and Video Controller
 
-The demo runs in **256×256 31 kHz 16-colour mode** (mode index 2). Key
+The demo runs in **256×256 31 kHz 16-colour mode** (mode index 2, ~55 Hz). A
+15 kHz mode (mode index 0) also exists — at that scan rate, 256 active lines
+with a vertical total of 260 gives ~60 Hz (the classic 240p/256p regime used
+by SNES, Neo Geo, and most arcade PCBs). 31 kHz is used here because the
+X68000's Sharp monitor is natively 31 kHz and it is better verified in MAME;
+the 15 kHz mode is the higher frame-rate choice if real-hardware compatibility
+on a 15 kHz CRT is the priority. Key
 register groups:
 
 - `CRTC_R00`–`CRTC_R08` (`0xE80000`): horizontal and vertical timing
@@ -880,7 +886,8 @@ The main loop calls `wait_vblank()` once per iteration. This polls
 `REG8(MFP_GPIP_B)` (byte read from `0xE88001`, bit 4) in a two-phase spin:
 wait until bit 4 is high (active display), then wait until it drops (VBlank
 starts). This gives a clean, jitter-free frame sync at the CRTC's native rate
-(~54 Hz in 31 kHz mode).
+(~55 Hz in 31 kHz mode; the 15 kHz mode would give ~60 Hz — see
+[CRTC and Video Controller](#crtc-and-video-controller)).
 
 The frame rate is inherently limited to one iteration per VBlank. In practice
 the demo runs comfortably at full rate: 100 sprite attribute writes + 100 sine
@@ -1126,7 +1133,7 @@ mid-screen HBlank handler to scroll different rows at different speeds.
 At 100 sprites with simple rectangular hitboxes, brute-force AABB testing
 (O(n²)) is feasible: 100×100 = 10,000 comparisons, each just four 16-bit
 subtracts and compares. On 8 MHz 68000 that is approximately 80,000 cycles,
-which fits comfortably in a 148,000-cycle frame budget at 54 Hz.
+which fits comfortably in a ~145,000-cycle frame budget at ~55 Hz.
 
 For more objects, partition by type: only check player bullets against enemies,
 etc. This reduces the active comparison count by 80–90%.
