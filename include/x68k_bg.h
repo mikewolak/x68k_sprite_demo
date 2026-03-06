@@ -26,8 +26,9 @@
 //   bg_grey_ramp(1, 15) fills entries 1–15 with a dark-to-bright grey scale.
 //
 // ── Scroll overview ──────────────────────────────────────────────────────────
-//   CRTC R10 (0xE80014) and R11 (0xE80016) hardware-scroll the GVRAM layer
-//   with toroidal wrap.  Range: 0–511 per axis.  Call bg_scroll_step() once
+//   CRTC R12 (0xE80018) and R13 (0xE8001A) hardware-scroll the GVRAM graphic
+//   layer with toroidal wrap.  (R10/R11 scroll the text layer, not GVRAM.)
+//   Range: 0–511 per axis.  Call bg_scroll_step() once
 //   per VBlank.  Because the tile region is a power-of-2 fraction of 512,
 //   the wrap is seamless with no redraw.
 //

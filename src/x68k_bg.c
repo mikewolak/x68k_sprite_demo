@@ -202,8 +202,8 @@ void bg_set_scroll(uint16_t x, uint16_t y)
 {
     bg_sx = x & 0x1FF;   // clamp to 9-bit hardware range
     bg_sy = y & 0x1FF;
-    REG16(CRTC_R10) = bg_sx;
-    REG16(CRTC_R11) = bg_sy;
+    REG16(CRTC_R12) = bg_sx;
+    REG16(CRTC_R13) = bg_sy;
 }
 
 // bg_scroll_step — advance scroll by (dx, dy) and wrap within 0–511.
@@ -223,6 +223,6 @@ void bg_scroll_step(int16_t dx, int16_t dy)
 
     bg_sx = (uint16_t)sx;
     bg_sy = (uint16_t)sy;
-    REG16(CRTC_R10) = bg_sx;
-    REG16(CRTC_R11) = bg_sy;
+    REG16(CRTC_R12) = bg_sx;
+    REG16(CRTC_R13) = bg_sy;
 }
