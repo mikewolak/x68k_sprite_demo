@@ -449,19 +449,115 @@ Because `bg_c=0` is also the animated HBlank gradient colour, the open areas
 between glyphs show the blue gradient through the embossed tile, blending both
 effects seamlessly.
 
-### Tiling and Scroll
+### HBlank Gradient
 
-After drawing the 32×32 tile into GVRAM at (0,0), `bg_tile_region(32, 32)`
-replicates it 16×16 times to fill the entire 512×512 GVRAM canvas. Because
-512 ÷ 32 = 16 exactly, the tiling is perfectly seamless. The algorithm uses
-two wrap-counter passes (no division or modulo anywhere):
+GVRAM is first filled entirely with colour index 0 via `bg_fill(0)`. Palette
+entry 0 starts at black. The HBlank ISR (`hblank_handler` in `x68k_video.c`)
+fires on every falling edge of HSync (MFP GPIP7, vector `0x4F`). On each
+scanline it writes a new GRB555 value to `GVRAM_PAL` (palette entry 0 at
+`0xE82000`):
 
-- **Pass 1:** extends each of the 32 source rows horizontally to 512 columns
-- **Pass 2:** copies the 32-row source block downward to fill all 512 rows
+```c
+// 24 gradient bands × 16 scanlines each = 384 scanlines covered
+if (s < 384)
+    REG16(GVRAM_PAL) = sky_colors[s >> 4];
+else
+    REG16(GVRAM_PAL) = 0x8088;   // twilight green ground (off-screen)
+```
 
-Each frame, `bg_scroll_step(1, 1)` advances the CRTC R12/R13 hardware scroll
-registers by one pixel in both axes. The toroidal hardware wrap means the
-512×512 pattern scrolls forever without any redraw.
+The `sky_colors[24]` table is a pure-blue ramp in GRB555 (`B` field only,
+`G=R=0`):
+
+```c
+static const uint16_t sky_colors[24] = {
+    0x0004, 0x0006, 0x000A, 0x000E,  //  0- 3: near-black → dark blue
+    0x0014, 0x001C, 0x0026, 0x0032,  //  4- 7: mid → vivid blue  ← visible
+    0x003A, 0x003C, 0x003E, 0x003E,  //  8-11: saturated (off-screen)
+    // ... 0x003E through band 23
+};
+```
+
+In the MAME "Disk Drive and Keyboard LEDs" view only approximately 128 lines
+are visible (bands 0–7, scanlines 0–127). The gradient therefore runs from
+near-black blue at the very top to vivid saturated blue near the bottom of the
+visible window.
+
+Because all GVRAM pixels are colour index 0, every pixel on screen takes its
+colour from palette entry 0 — which the ISR changes 128 times per frame. The
+CPU cost is **one word write per scanline**; no pixel data is ever rewritten.
+
+### Tiling
+
+Once `bg_fill(0)` and the palette are set, the 32×32 CAFE tile is drawn
+into GVRAM at (0, 0). `bg_tile_region(32, 32)` then replicates it across
+the full 512×512 GVRAM canvas using two wrap-counter passes — no division or
+modulo anywhere:
+
+- **Pass 1 — horizontal:** For each of the 32 source rows, copy the 32 source
+  pixels rightward to column 511, resetting the source X counter every 32
+  pixels. Result: 512 ÷ 32 = 16 copies per row.
+- **Pass 2 — vertical:** Copy the 32 completed rows downward to row 511,
+  resetting the source Y counter every 32 rows. Result: 512 ÷ 32 = 16 sets
+  of rows.
+
+Because 512 is exactly divisible by 32, the tiling is perfectly seamless —
+no partial tile exists anywhere in the 512×512 canvas.
+
+This is a one-time init operation that runs once at startup, before the main
+loop begins. No tiling CPU cost occurs per-frame.
+
+### How the Two Effects Combine
+
+The emboss parameters `bg_c=0` is the key. Any GVRAM pixel that is "off"
+(not part of a letter glyph) is written as colour index 0 — the same entry
+animated by the HBlank ISR. So the gradient bleeds through all the gaps
+between letters and tiles. The lit glyph pixels (hi/mid/shadow) use palette
+entries 1–15 (the grey ramp), which are static.
+
+The visual result: grey embossed CAFE lettering, raised-metal appearance,
+floating over a continuously shifting blue gradient background. The gradient
+changes horizontally (scanline by scanline) while the tile pattern moves
+diagonally. The two effects are independent — the gradient is driven by
+interrupt, the tile motion by CRTC registers.
+
+### Hardware Scroll
+
+The X68000 CRTC R12/R13 registers (`0xE80018`/`0xE8001A`) define the
+top-left corner of the GVRAM viewport into the 512×512 canvas. Incrementing
+both by 1 each frame shifts the visible window one pixel right and one pixel
+down — the pattern appears to scroll diagonally (45°) toward the bottom-right.
+
+When the scroll position reaches 511, incrementing by 1 wraps it back to 0:
+the hardware enforces this 9-bit (0–511) toroidal wrap automatically. Because
+the tile is 32 pixels wide and 512 ÷ 32 = 16, the wrap point coincides exactly
+with a tile boundary — the scroll is completely seamless, no seam ever appears.
+
+`bg_scroll_step` maintains the scroll position in software (`bg_sx`, `bg_sy`)
+using integer arithmetic with compare-and-subtract wrap (no division/modulo):
+
+```c
+void bg_scroll_step(int16_t dx, int16_t dy)
+{
+    int16_t sx = (int16_t)bg_sx + dx;
+    int16_t sy = (int16_t)bg_sy + dy;
+
+    if      (sx >= 512) sx -= 512;
+    else if (sx <    0) sx += 512;
+
+    if      (sy >= 512) sy -= 512;
+    else if (sy <    0) sy += 512;
+
+    bg_sx = (uint16_t)sx;
+    bg_sy = (uint16_t)sy;
+    REG16(CRTC_R12) = bg_sx;  // write to hardware scroll registers
+    REG16(CRTC_R13) = bg_sy;
+}
+```
+
+The signed `int16_t` arithmetic allows negative step values for reverse scroll
+in any direction. The per-frame CPU cost is **two CRTC register writes** — no
+pixel data is ever moved. `bg_scroll_step(1, 1)` is called once per VBlank at
+the end of the main loop.
 
 ### Typical Initialisation Sequence
 
