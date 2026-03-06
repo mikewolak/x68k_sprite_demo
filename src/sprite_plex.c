@@ -448,6 +448,7 @@ void sprite_plex_loop(void)
 
     for (;;) {
         wait_vblank();
+        bg_scroll_step(1, 1);
         frame_counter++;
 
         if (++pat_tick >= 3) {
@@ -515,6 +516,5 @@ void sprite_plex_loop(void)
         }
 
         update_font_display();
-        bg_scroll_step(1, 1);   // diagonal background scroll, hardware-wrapped
     }
 }
