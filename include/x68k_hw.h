@@ -79,10 +79,20 @@
 #define DMA_DFC     49    // byte: Device Function Code
 #define DMA_BFC     57    // byte: Base Function Code
 
-// Video mode indices for init_video()
-#define VIDEO_256x256_16C_15K   0
-#define VIDEO_512x512_16C_31K   1
-#define VIDEO_256x256_16C_31K   2
-#define VIDEO_512x256_16C_31K   3
+// Video mode indices for init_video() — see video_mode_table in x68k_video.c
+// for full register-by-register documentation of each mode.
+//
+// "16C" = 16-colour GVRAM graphic layer (4bpp palette, 16 entries at $E82000).
+//         This refers to the GVRAM depth only — the sprite layer always has
+//         16 separate palettes × 16 colours = 256 simultaneous sprite colours.
+//
+// 15kHz modes: progressive scan, overscan, ~60 Hz.  Require a 15kHz CRT or
+//              a multi-sync monitor.  GVRAM display is 256×240 active lines.
+// 31kHz modes: underscan, ~54 Hz.  256-line 31kHz modes use doublescan
+//              (each pixel row shown twice), giving only 128 unique pixel rows.
+#define VIDEO_256x256_16C_15K   0   // 256×240 active, 15kHz, ~61.5Hz  *** ACTIVE ***
+#define VIDEO_512x512_16C_31K   1   // 512×512 active, 31kHz, ~54.7Hz  VERIFIED
+#define VIDEO_256x256_16C_31K   2   // 256×128 unique rows, 31kHz doublescan
+#define VIDEO_512x256_16C_31K   3   // 512×128 unique rows, 31kHz doublescan
 
 #endif // X68K_HW_H

@@ -10,11 +10,34 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 // Video mode table — 4 modes, 14 words (28 bytes) each
-// Fields: r20, r00-r08 (9 words), sp_h_total, sp_h_disp, sp_v_disp, sp_res
+//
+// CRTC R20 ($E80028) — resolution selector:
+//   bit 4   : 0 = 15 kHz (TV/CRT composite sync), 1 = 31 kHz (VGA-style)
+//   bits 3-2: vertical pixel count: 00=256, 01=512
+//   bits 1-0: horizontal pixel count: 00=256, 01=512
+//
+// CRTC R00-R08 ($E80000-$E80010) — horizontal/vertical timing:
+//   R00: H-total    (in 8-pixel chars; total scanline width)
+//   R01: H-sync end (end of horizontal sync pulse)
+//   R02: H-disp start (first visible char; = H-back-porch end)
+//   R03: H-disp end   (first invisible char; R03-R02 = display width in chars)
+//   R04: V-total    (total lines per frame, 0-based)
+//   R05: V-sync end (end of vertical sync pulse)
+//   R06: V-disp start (first visible line; = V-back-porch end)
+//   R07: V-disp end   (first invisible line; R07-R06 = active display lines)
+//   R08: V-sync adjustment (fine-tuning for interlace; 0 for progressive)
+//
+// Sprite timing ($EB080A-$EB0810) — must match CRTC H/V parameters:
+//   SP_H_TOTAL ($EB080A): sprite H-total (should equal CRTC R00)
+//   SP_H_DISP  ($EB080C): sprite H-disp start (chars before first sprite column)
+//   SP_V_DISP  ($EB080E): sprite V-disp start (lines before first sprite row)
+//   SP_RES     ($EB0810): sprite resolution flags (bit0=H512, bit1=V512, etc.)
+//
+// Sources: X68000 Technical Data Book Tables 2-11 (CRTC) and 2-18 (Sprite).
 ////////////////////////////////////////////////////////////////////////////////
 typedef struct {
     uint16_t r20;
-    uint16_t r[9];        // CRTC R00-R08 (sequential at $E80000+)
+    uint16_t r[9];        // CRTC R00-R08 (sequential word registers at $E80000+)
     uint16_t sp_h_total;
     uint16_t sp_h_disp;
     uint16_t sp_v_disp;
@@ -22,16 +45,134 @@ typedef struct {
 } video_mode_t;
 
 static const video_mode_t video_mode_table[4] = {
-    // Mode 0: 256x256 16C 15kHz
-    { 0x0000, {0x0089,0x000E,0x001C,0x00AC,0x0104,0x0003,0x001A,0x011A,0x0005},
-      0x0089, 0x0004, 0x001A, 0x0000 },
-    // Mode 1: 512x512 16C 31kHz (VERIFIED)
+
+    // -------------------------------------------------------------------------
+    // Mode 0: 256x256 16C 15kHz — VIDEO_256x256_16C_15K (index 0)   *** ACTIVE ***
+    // Source: X68000 Technical Data Book Table 2-11 (rightmost column) +
+    //         Table 2-18 (15kHz 256×256 sprite timing)
+    //
+    // R20 = 0x0000
+    //   bit4=0  → 15 kHz horizontal scan rate (~15.98 kHz actual)
+    //   bits1-0=00 → H pixel count = 256
+    //   bits3-2=00 → V pixel count = 256
+    //
+    // Pixel clock: ~4.79 MHz (15.98 kHz × 300 dots/line = 4.794 MHz)
+    //
+    // CRTC horizontal (all values in 8-pixel char units):
+    //   R00=0x0025 (37): H-total = 37 chars = 296 dot-clocks/line
+    //   R01=0x0001 ( 1): H-sync ends at char 1 (sync pulse = 1 char = 8px)
+    //   R02=0x0000 ( 0): H-disp starts at char 0 (no back-porch — overscan)
+    //   R03=0x0020 (32): H-disp ends at char 32 → 32×8 = 256 visible pixels
+    //   Note: 15kHz uses OVERSCAN (display begins at char 0); no blanking margin
+    //
+    // CRTC vertical:
+    //   R04=0x0103 (259): V-total = 260 lines (0-based: 0..259)
+    //     → Frame rate: 15980 Hz / 260 lines ≈ 61.5 Hz
+    //   R05=0x0002 ( 2): V-sync ends at line 2
+    //   R06=0x0010 (16): V-disp starts at line 16 (16-line back porch)
+    //   R07=0x0100 (256): V-disp ends at line 256 → 256-16 = 240 active lines
+    //   R08=0x0024 (36): V-sync adjustment
+    //
+    // Active display: 256×240 pixels (progressive scan, no doublescan)
+    // Sprite coordinate offset: reg = screen + 16 (hardware constant)
+    //
+    // Sprite timing (Table 2-18, 15kHz 256×256 column):
+    //   SP_H_TOTAL=0x0025: matches CRTC R00
+    //   SP_H_DISP =0x0004: 4 chars before first sprite column
+    //   SP_V_DISP =0x0010: 16 lines before first sprite row (matches R06)
+    //   SP_RES    =0x0000: no resolution doubling
+    // -------------------------------------------------------------------------
+    { 0x0000, {0x0025,0x0001,0x0000,0x0020,0x0103,0x0002,0x0010,0x0100,0x0024},
+      0x0025, 0x0004, 0x0010, 0x0000 },
+
+    // -------------------------------------------------------------------------
+    // Mode 1: 512x512 16C 31kHz — VIDEO_512x512_16C_31K (index 1)   VERIFIED
+    // Source: X68000 Technical Data Book Table 2-11 (512×512 column)
+    //
+    // R20 = 0x0015
+    //   bit4=1  → 31 kHz horizontal scan rate (~31.5 kHz actual)
+    //   bits1-0=01 → H pixel count = 512
+    //   bits3-2=01 → V pixel count = 512
+    //
+    // CRTC horizontal (8-pixel char units):
+    //   R00=0x004B (75): H-total = 76 chars = 608 dots/line
+    //   R01=0x0003 ( 3): H-sync ends at char 3
+    //   R02=0x0005 ( 5): H-disp starts at char 5 (underscan back-porch)
+    //   R03=0x0045 (69): H-disp ends at char 69 → (69-5)×8 = 512 pixels
+    //
+    // CRTC vertical:
+    //   R04=0x023F (575): V-total = 576 lines → 31500/576 ≈ 54.7 Hz
+    //   R05=0x0005 ( 5): V-sync ends at line 5
+    //   R06=0x0010 (16): V-disp starts at line 16
+    //   R07=0x0210 (528): V-disp ends at line 528 → 528-16 = 512 active lines
+    //   R08=0x0005 ( 5): V-sync adjustment
+    //
+    // Active display: 512×512 pixels (progressive, 31kHz underscan)
+    //
+    // Sprite timing:
+    //   SP_H_TOTAL=0x004B, SP_H_DISP=0x0004, SP_V_DISP=0x0010, SP_RES=0x0005
+    //   SP_RES=0x0005: bit0=1 (H512), bit2=1 (V512... TBD confirm bit assignment)
+    // -------------------------------------------------------------------------
     { 0x0015, {0x004B,0x0003,0x0005,0x0045,0x023F,0x0005,0x0010,0x0210,0x0005},
       0x004B, 0x0004, 0x0010, 0x0005 },
-    // Mode 2: 256x256 16C 31kHz
+
+    // -------------------------------------------------------------------------
+    // Mode 2: 256x256 16C 31kHz — VIDEO_256x256_16C_31K (index 2)
+    // Source: X68000 Technical Data Book Table 2-11 (31kHz 256×256 column)
+    //
+    // R20 = 0x0010
+    //   bit4=1  → 31 kHz
+    //   bits1-0=00 → H pixel count = 256
+    //   bits3-2=00 → V pixel count = 256
+    //
+    // CRTC horizontal:
+    //   R00=0x004B (75): H-total = 76 chars (same clock as 512-mode)
+    //   R01=0x0003 ( 3): H-sync ends at char 3
+    //   R02=0x0015 (21): H-disp starts at char 21 (wide underscan back-porch)
+    //   R03=0x0035 (53): H-disp ends at char 53 → (53-21)×8 = 256 pixels
+    //
+    // CRTC vertical (doublescan — each pixel row displayed twice):
+    //   R04=0x023F (575): V-total = 576 lines → ~54.7 Hz
+    //   R05=0x0005 ( 5): V-sync ends at line 5
+    //   R06=0x0010 (16): V-disp starts at line 16
+    //   R07=0x0110 (272): V-disp ends at line 272 → 272-16 = 256 lines
+    //     In doublescan: 256 CRTC lines / 2 = 128 unique pixel rows visible
+    //   R08=0x0005 ( 5): V-sync adjustment
+    //
+    // Active display: 256×256 CRTC lines = 128 unique pixel rows (doublescan)
+    // WARNING: use 15kHz mode (index 0) for full 240-line progressive display.
+    //
+    // Sprite timing:
+    //   SP_H_TOTAL=0x004B, SP_H_DISP=0x0014, SP_V_DISP=0x0010, SP_RES=0x0000
+    // -------------------------------------------------------------------------
     { 0x0010, {0x004B,0x0003,0x0015,0x0035,0x023F,0x0005,0x0010,0x0110,0x0005},
       0x004B, 0x0014, 0x0010, 0x0000 },
-    // Mode 3: 512x256 16C 31kHz
+
+    // -------------------------------------------------------------------------
+    // Mode 3: 512x256 16C 31kHz — VIDEO_512x256_16C_31K (index 3)
+    // Source: X68000 Technical Data Book Table 2-11 (31kHz 512×256 column)
+    //
+    // R20 = 0x0011
+    //   bit4=1  → 31 kHz
+    //   bits1-0=01 → H pixel count = 512
+    //   bits3-2=00 → V pixel count = 256
+    //
+    // CRTC horizontal:
+    //   R00=0x004B (75): H-total = 76 chars
+    //   R01=0x0003 ( 3): H-sync ends at char 3
+    //   R02=0x0005 ( 5): H-disp starts at char 5
+    //   R03=0x0045 (69): H-disp ends at char 69 → (69-5)×8 = 512 pixels
+    //
+    // CRTC vertical (doublescan):
+    //   R04=0x023F (575): V-total = 576 lines → ~54.7 Hz
+    //   R05=0x0005 ( 5): V-sync ends at line 5
+    //   R06=0x0010 (16): V-disp starts at line 16
+    //   R07=0x0110 (272): V-disp ends at line 272 → 256 CRTC lines (doublescan)
+    //   R08=0x0005 ( 5): V-sync adjustment
+    //
+    // Sprite timing:
+    //   SP_H_TOTAL=0x004B, SP_H_DISP=0x0004, SP_V_DISP=0x0010, SP_RES=0x0001
+    // -------------------------------------------------------------------------
     { 0x0011, {0x004B,0x0003,0x0005,0x0045,0x023F,0x0005,0x0010,0x0110,0x0005},
       0x004B, 0x0004, 0x0010, 0x0001 },
 };

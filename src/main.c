@@ -31,7 +31,7 @@ void do_init(void) {}
 void do_loader(void)
 {
 #if DEMO_RES == 256
-    init_video(VIDEO_256x256_16C_31K);
+    init_video(VIDEO_256x256_16C_15K);
 #elif DEMO_RES == 512
     init_video(VIDEO_512x512_16C_31K);
 #else

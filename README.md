@@ -352,23 +352,85 @@ edge). The demo uses:
 
 ### CRTC and Video Controller
 
-The demo runs in **256×256 31 kHz 16-colour mode** (mode index 2, ~55 Hz). A
-15 kHz mode (mode index 0) also exists — at that scan rate, 256 active lines
-with a vertical total of 260 gives ~60 Hz (the classic 240p/256p regime used
-by SNES, Neo Geo, and most arcade PCBs). 31 kHz is used here because the
-X68000's Sharp monitor is natively 31 kHz and it is better verified in MAME;
-the 15 kHz mode is the higher frame-rate choice if real-hardware compatibility
-on a 15 kHz CRT is the priority. Key
-register groups:
+The demo runs in **256×256 15 kHz mode** (`VIDEO_256x256_16C_15K`, mode index
+0, ~61.5 Hz). The "16C" label is the X68000's official hardware designation for
+the **4bpp GVRAM graphic layer** — it means the GVRAM palette holds 16 entries,
+not that the screen is limited to 16 colours. The sprite layer uses completely
+separate palette RAM (16 palettes × 16 colours = up to 256 simultaneous sprite
+colours), independent of the GVRAM colour depth setting. The demo actually
+displays the GVRAM grey ramp + gradient (16 colours), sprite palette 0 (plex
+sprites), and sprite palette 1 (HUD font) all simultaneously.
+
+15 kHz at 240 active lines (V-total = 260, R06=16→R07=256 → 240 active) gives
+~61.5 Hz — the classic 240p/256p progressive scan rate used by SNES, Neo Geo,
+and arcade PCBs. This is the correct mode for real-hardware X68000 CRT monitors
+that accept 15 kHz composite sync. Unlike the 31 kHz 256-mode (which uses
+doublescan, showing only 128 unique pixel rows), 15 kHz is fully progressive:
+every CRTC line is a unique pixel row.
+
+Key register groups:
 
 - `CRTC_R00`–`CRTC_R08` (`0xE80000`): horizontal and vertical timing
 - `CRTC_R10`/`CRTC_R11` (`0xE80014`/`0xE80016`): **text** layer H/V scroll
 - `CRTC_R12`/`CRTC_R13` (`0xE80018`/`0xE8001A`): **GVRAM** graphic layer H/V scroll
-- `CRTC_R20` (`0xE80028`): resolution and colour depth selector
+- `CRTC_R20` (`0xE80028`): resolution and scan rate selector
 - `VC_R0`–`VC_R2` (`0xE82400`–`0xE82600`): layer enable and priority
 
 `VC_R2 = 0x00C1` enables GVRAM layer 0 (bit 0), sprite layer (bit 6), and text
 layer (bit 7).
+
+### Video Mode Reference
+
+All four modes in `video_mode_table` (see `src/x68k_video.c` for
+register-by-register comments):
+
+| Index | Constant | H×V | Scan | Active pixels | Frame rate | Notes |
+|-------|----------|-----|------|---------------|------------|-------|
+| 0 | `VIDEO_256x256_16C_15K` | 256×256 | 15 kHz | **256×240** | ~61.5 Hz | Progressive. Overscan. **Active mode.** |
+| 1 | `VIDEO_512x512_16C_31K` | 512×512 | 31 kHz | 512×512 | ~54.7 Hz | Progressive. Underscan. Verified. |
+| 2 | `VIDEO_256x256_16C_31K` | 256×256 | 31 kHz | 256×128 unique rows | ~54.7 Hz | Doublescan — 256 CRTC lines shown twice. |
+| 3 | `VIDEO_512x256_16C_31K` | 512×256 | 31 kHz | 512×128 unique rows | ~54.7 Hz | Doublescan — 256 CRTC lines shown twice. |
+
+**15 kHz vs 31 kHz doublescan explained:**
+
+The X68000 CRTC in 31 kHz 256-mode outputs 256 CRTC lines but drives the
+monitor at 31 kHz — the same H-rate used for 512-line modes. To fill the
+frame, each pixel row is scanned twice (doublescan, `vmultiple=2` in MAME).
+This means only 128 unique pixel rows are visible; the effective screen height
+is 128 pixels in display coordinates even though the CRTC V-display register
+spans 256 lines.
+
+The 15 kHz mode runs the H-scan at ~15.98 kHz (TV rate). With V-total = 260
+lines at this rate, there is no need for doublescan — each of the 240 active
+lines is a distinct pixel row. The full 256×240 pixel grid is visible.
+
+**CRTC R20 bit fields** (`$E80028`):
+
+```
+bit 4   : 0 = 15 kHz  (TV/CRT composite sync, overscan)
+          1 = 31 kHz  (VGA-style, underscan)
+bits 3-2: V resolution: 00 = 256 lines, 01 = 512 lines
+bits 1-0: H resolution: 00 = 256 pixels, 01 = 512 pixels
+```
+
+**15 kHz 256×256 CRTC register values** (TDB Table 2-11, verified):
+
+| Register | Address | Value | Meaning |
+|----------|---------|-------|---------|
+| R20 | $E80028 | 0x0000 | 15kHz, H=256, V=256 |
+| R00 | $E80000 | 0x0025 | H-total = 37 chars (296 dot-clocks) |
+| R01 | $E80002 | 0x0001 | H-sync ends at char 1 |
+| R02 | $E80004 | 0x0000 | H-disp starts at char 0 (overscan) |
+| R03 | $E80006 | 0x0020 | H-disp ends at char 32 → 256 px |
+| R04 | $E80008 | 0x0103 | V-total = 260 lines |
+| R05 | $E8000A | 0x0002 | V-sync ends at line 2 |
+| R06 | $E8000C | 0x0010 | V-disp starts at line 16 |
+| R07 | $E8000E | 0x0100 | V-disp ends at line 256 → 240 active |
+| R08 | $E80010 | 0x0024 | V-sync adjustment |
+| SP_H_TOTAL | $EB080A | 0x0025 | Sprite H-total (= CRTC R00) |
+| SP_H_DISP  | $EB080C | 0x0004 | Sprite H-disp start |
+| SP_V_DISP  | $EB080E | 0x0010 | Sprite V-disp start (= R06) |
+| SP_RES     | $EB0810 | 0x0000 | No resolution doubling |
 
 ---
 
@@ -407,10 +469,10 @@ The circle path is stored as a static 100-entry lookup table generated offline
 with Bresenham's midpoint circle algorithm (see [Key Algorithms](#key-algorithms)).
 There is no floating-point arithmetic anywhere in the binary.
 
-Circle parameters (256-mode):
-- Centre: screen(160, 64) → reg(176, 80)
-- Radius: 55 pixels
-- Coverage: screen_y 9–119 (fully within visible area)
+Circle parameters (256-mode, 15kHz progressive):
+- Centre: screen(128, 120) → reg(144, 136) — centred in 256×240 display
+- Radius: 64 pixels
+- Coverage: screen_y 56–184 (well within 240-line visible area)
 
 ### Phase 2 — Decompose Transition (completion-driven)
 
@@ -539,10 +601,10 @@ static const uint16_t sky_colors[24] = {
 };
 ```
 
-In the MAME "Disk Drive and Keyboard LEDs" view only approximately 128 lines
-are visible (bands 0–7, scanlines 0–127). The gradient therefore runs from
-near-black blue at the very top to vivid saturated blue near the bottom of the
-visible window.
+In 15 kHz progressive mode all 240 active lines are visible (bands 0–14,
+scanlines 0–239). The gradient runs from near-black blue at the top through
+vivid saturated blue across the mid-screen area. The remaining gradient bands
+(scanlines 240–383) are off-screen below the active display.
 
 Because all GVRAM pixels are colour index 0, every pixel on screen takes its
 colour from palette entry 0 — which the ISR changes 128 times per frame. The
@@ -702,8 +764,8 @@ The Makefile handles the complete pipeline from C/asm sources to bootable
 floppy image:
 
 ```
-make            # build sprite_plex.xdf (256×256 mode)
-make DEMO_RES=512x512   # build in 512×512 mode (120 sprites, 15×8 grid)
+make                    # build sprite_plex.xdf (256×256 15kHz, 100 sprites)
+make DEMO_RES=512x512   # build in 512×512 31kHz mode (120 sprites, 15×8 grid)
 make run        # build + launch in MAME
 make sprites    # regenerate PCG data from spritesheet_16x16.png
 make clean      # wipe obj/ and build/
@@ -794,8 +856,8 @@ mame x68000 -flop1 build/sprite_plex.xdf \
 **Important — MAME display mode:** Use the **"Disk Drive and Keyboard LEDs"**
 view in MAME (accessed via the in-emulator menu). The default view shows the
 full 768×512 output buffer; the artwork view crops to the actual visible game
-area (approximately 256×128 pixels in 256-mode) which is what the demo was
-calibrated for.
+area. In 15 kHz 256-mode (the active mode) this exposes the full **256×240**
+progressive-scan display.
 
 The demo boots directly from floppy. The IPL ROM loads the binary at `0x2000`,
 verifies the checksum, clears BSS, disables hardware interrupts, and calls
@@ -827,15 +889,16 @@ generation time, not at runtime.
 
 ### Visible Area Calibration
 
-In 256-mode with the MAME "Disk Drive and Keyboard LEDs" artwork view, the
-visible game area is approximately **256 pixels wide × 128 pixels tall**
-(screen_y 0–127). The full CRTC output is 256×256, but the case artwork
-crops the lower half. All grid and circle positions were calibrated to this
-visible window.
+The demo runs in **15 kHz progressive mode**: 256 pixels wide × 240 pixels
+tall (screen_y 0–239). Unlike 31 kHz 256-mode (doublescan, 128 unique pixel
+rows), every CRTC line in 15 kHz mode is a distinct pixel row. The full
+240-line display is active and all sprite positions are calibrated for it.
 
 The 10×10 sprite grid:
 - X: `BASE_X = 27` (screen_x 11), step 26 → covers screen_x 11–245
-- Y: `BASE_Y = 22` (screen_y 6),  step 12 → covers screen_y 6–114
+- Y: `BASE_Y = 41` (screen_y 25), step 21 → covers screen_y 25–214
+
+Margin calculation: (240 − 9 × 21) / 2 = 25 px top/bottom margin → BASE_Y = 25 + 16 = 41.
 
 ### PCG Pattern Management
 
@@ -885,9 +948,9 @@ when porting assets.
 The main loop calls `wait_vblank()` once per iteration. This polls
 `REG8(MFP_GPIP_B)` (byte read from `0xE88001`, bit 4) in a two-phase spin:
 wait until bit 4 is high (active display), then wait until it drops (VBlank
-starts). This gives a clean, jitter-free frame sync at the CRTC's native rate
-(~55 Hz in 31 kHz mode; the 15 kHz mode would give ~60 Hz — see
-[CRTC and Video Controller](#crtc-and-video-controller)).
+starts). This gives a clean, jitter-free frame sync at the CRTC's native rate.
+The demo runs in 15 kHz mode at **~61.5 Hz** (V-total = 260 lines;
+15,980 Hz ÷ 260 ≈ 61.5 Hz). See [Video Mode Reference](#video-mode-reference).
 
 The frame rate is inherently limited to one iteration per VBlank. In practice
 the demo runs comfortably at full rate: 100 sprite attribute writes + 100 sine
@@ -1016,12 +1079,20 @@ __asm__ volatile("move.w #0x2500,sr");
 __asm__ volatile(".word 0x46FC, 0x2500");
 ```
 
-### 4. Visible Screen Area in MAME
+### 4. 15 kHz vs 31 kHz Doublescan — Visible Line Count Differs
 
-The X68000 CRTC in 256-mode outputs 256 vertical lines, but the MAME
-"Disk Drive and Keyboard LEDs" artwork view (the most faithful to the real
-machine with its case) exposes only approximately **128 lines** (screen_y 0–127).
-Sprite positions must be calibrated for this window, not the full CRTC height.
+The X68000 31 kHz 256-mode uses **doublescan** (each pixel row displayed twice
+to fill the frame at the higher H-rate). In MAME this renders as only 128
+unique pixel rows even though CRTC R07−R06 = 256. Sprite positions calibrated
+for this mode must fit within screen_y 0–127.
+
+The 15 kHz 256-mode is **progressive** — all 240 active lines (R07=256,
+R06=16 → 240 lines) are unique pixel rows. This demo runs in 15 kHz mode.
+Positions are calibrated for screen_y 0–239.
+
+**If you switch to 31 kHz mode (`VIDEO_256x256_16C_31K`)** you must also halve
+all Y positions and step sizes (e.g. `BASE_Y` = 22, `GRID_STEP_Y` = 12) or
+sprites will appear in the top quarter of the screen only.
 
 ### 5. GVRAM DMA Fill Format
 
@@ -1133,7 +1204,8 @@ mid-screen HBlank handler to scroll different rows at different speeds.
 At 100 sprites with simple rectangular hitboxes, brute-force AABB testing
 (O(n²)) is feasible: 100×100 = 10,000 comparisons, each just four 16-bit
 subtracts and compares. On 8 MHz 68000 that is approximately 80,000 cycles,
-which fits comfortably in a ~145,000-cycle frame budget at ~55 Hz.
+which fits comfortably in a ~130,000-cycle frame budget at ~61.5 Hz (15 kHz
+mode).
 
 For more objects, partition by type: only check player bullets against enemies,
 etc. This reduces the active comparison count by 80–90%.

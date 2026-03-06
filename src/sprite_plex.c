@@ -2,7 +2,7 @@
 // sprite_plex.c — X68000 128-sprite PCG multiplexer demo (C99 port)
 //
 // Compile-time resolution via DEMO_RES (set by Makefile):
-//   DEMO_RES=256: 10x10 grid = 100 sprites, 256x256 31kHz
+//   DEMO_RES=256: 10x10 grid = 100 sprites, 256x256 15kHz
 //   DEMO_RES=512: 15x8 grid = 120 sprites, 512x512 31kHz
 //
 // Demo phases:
@@ -12,9 +12,9 @@
 //     sprite is launched one-at-a-time, gliding 2px/frame to its grid
 //     target; once all 100 sprites arrive, phase 0 resumes.
 //
-// Visible display calibration (256 mode, MAME "Disk Drive and Keyboard LEDs"):
-//   The case artwork exposes screen_y 0-128 (~128 lines visible).
-//   Circle: centre screen(128,64) -> reg(144,80), r=55 -> screen_y 9-119.
+// Visible display calibration (256 mode, 15kHz progressive):
+//   Full display exposes screen_y 0-239 (~240 lines visible).
+//   Circle: centre screen(128,120) -> reg(144,136), r=64 -> screen_y 56-184.
 //
 // Sprite slot layout:
 //   0 .. PLEX_TOTAL-1  : animated plex grid / circle
@@ -40,24 +40,24 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Grid layout — resolved at compile time from DEMO_RES
 //
-// Visible area calibration: screen_y 0-128 visible in 256 mode.
-// Grid fits 10 rows in ~120 lines: GRID_STEP_Y=12, BASE_Y=22 (screen_y 6).
-// Grid fits 10 cols in 256 lines:  GRID_STEP_X=26, BASE_X=27 (screen_x 11).
+// Visible area calibration: screen_y 0-239 visible in 256 mode (15kHz progressive).
+// Grid fits 10 rows in 240 lines: GRID_STEP_Y=21, BASE_Y=41 (screen_y 25).
+// Grid fits 10 cols in 256 lines: GRID_STEP_X=26, BASE_X=27 (screen_x 11).
 ////////////////////////////////////////////////////////////////////////////////
 #define FONT_STEP   16      // pixel spacing between font character sprites
 #define FONT_REG_Y  18      // sprite reg Y for HUD row (screen y=2)
 
 #if DEMO_RES == 256
-// 256x256 mode — visible area ~128 lines tall x 256 wide
+// 256x256 mode — visible area ~240 lines tall x 256 wide (15kHz progressive)
 // X: margin=(256-9*26)/2=11 -> BASE_X=11+16=27; covers screen_x 11-245
-// Y: margin=(120-9*12)/2=6  -> BASE_Y=6+16=22;  covers screen_y 6-114
+// Y: margin=(240-9*21)/2=25 -> BASE_Y=25+16=41; covers screen_y 25-214
 #define GRID_STEP_X 26
-#define GRID_STEP_Y 12
+#define GRID_STEP_Y 21
 #define PLEX_COLS   10
 #define PLEX_ROWS   10
 #define PLEX_TOTAL  100
 #define BASE_X      27
-#define BASE_Y      22
+#define BASE_Y      41
 #define FONT_REG_X  208     // flush right: screen x=192, reg x=208
 #elif DEMO_RES == 512
 // 512x512: 15x8 grid = 120 sprites (HW max with HUD at 120-123)
@@ -137,32 +137,31 @@ static const int8_t sine_table[256] = {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-// Bresenham circle path — 100 points evenly sampled from a r=55 circle,
-// sorted CCW from east.
-// Centre: screen(160,64) -> reg(176,80). screen_y range: 9-119.
-// Shifted +32px right of horizontal centre for visual balance.
+// Circle path — 100 points evenly sampled from a r=64 circle, sorted CCW
+// from west.
+// Centre: screen(128,120) -> reg(144,136). screen_y range: 56-184.
 ////////////////////////////////////////////////////////////////////////////////
-static const uint8_t circle_lut[100][2] = {  /* {reg_x, reg_y} Bresenham r=55, centre reg(176,80) */
-    {121, 79}, {121, 76}, {121, 73}, {122, 70}, {123, 67},
-    {124, 63}, {125, 60}, {126, 57}, {128, 54}, {129, 51},
-    {131, 48}, {134, 45}, {136, 42}, {140, 38}, {143, 36},
-    {146, 34}, {149, 32}, {152, 31}, {155, 29}, {158, 28},
-    {161, 27}, {165, 26}, {168, 26}, {171, 25}, {174, 25},
-    {177, 25}, {180, 25}, {183, 25}, {186, 26}, {189, 27},
-    {193, 28}, {196, 29}, {199, 30}, {202, 32}, {205, 33},
-    {208, 35}, {211, 38}, {214, 40}, {218, 44}, {220, 47},
-    {222, 50}, {224, 53}, {225, 56}, {227, 59}, {228, 62},
-    {229, 65}, {230, 69}, {230, 72}, {231, 75}, {231, 78},
-    {231, 81}, {231, 84}, {231, 87}, {230, 90}, {229, 93},
-    {228, 97}, {227,100}, {226,103}, {224,106}, {223,109},
-    {221,112}, {218,115}, {216,118}, {212,122}, {209,124},
-    {206,126}, {203,128}, {200,129}, {197,131}, {194,132},
-    {191,133}, {187,134}, {184,134}, {181,135}, {178,135},
-    {175,135}, {172,135}, {169,135}, {166,134}, {163,133},
-    {159,132}, {156,131}, {153,130}, {150,128}, {147,127},
-    {144,125}, {141,122}, {138,120}, {134,116}, {132,113},
-    {130,110}, {128,107}, {127,104}, {125,101}, {124, 98},
-    {123, 95}, {122, 91}, {122, 88}, {121, 85}, {121, 82},
+static const uint8_t circle_lut[100][2] = {  /* {reg_x, reg_y} r=64, centre reg(144,136) */
+    { 80,136}, { 80,132}, { 81,128}, { 81,124}, { 82,120},
+    { 83,116}, { 84,112}, { 86,109}, { 88,105}, { 90,102},
+    { 92, 98}, { 95, 95}, { 97, 92}, {100, 89}, {103, 87},
+    {106, 84}, {110, 82}, {113, 80}, {117, 78}, {120, 76},
+    {124, 75}, {128, 74}, {132, 73}, {136, 73}, {140, 72},
+    {144, 72}, {148, 72}, {152, 73}, {156, 73}, {160, 74},
+    {164, 75}, {168, 76}, {171, 78}, {175, 80}, {178, 82},
+    {182, 84}, {185, 87}, {188, 89}, {191, 92}, {193, 95},
+    {196, 98}, {198,102}, {200,105}, {202,109}, {204,112},
+    {205,116}, {206,120}, {207,124}, {207,128}, {208,132},
+    {208,136}, {208,140}, {207,144}, {207,148}, {206,152},
+    {205,156}, {204,160}, {202,163}, {200,167}, {198,170},
+    {196,174}, {193,177}, {191,180}, {188,183}, {185,185},
+    {182,188}, {178,190}, {175,192}, {171,194}, {168,196},
+    {164,197}, {160,198}, {156,199}, {152,199}, {148,200},
+    {144,200}, {140,200}, {136,199}, {132,199}, {128,198},
+    {124,197}, {120,196}, {117,194}, {113,192}, {110,190},
+    {106,188}, {103,185}, {100,183}, { 97,180}, { 95,177},
+    { 92,174}, { 90,170}, { 88,167}, { 86,163}, { 84,160},
+    { 83,156}, { 82,152}, { 81,148}, { 81,144}, { 80,140},
 };
 
 // PCG load order: 50 unique-shape patterns first, then 78 colour variants.
