@@ -1,9 +1,10 @@
 # X68000 Sprite Plex Demo
 
-A bare-metal PCG sprite multiplexer for the Sharp X68000, written entirely in
-C99 (M68000-targeted). It displays 100 simultaneous 16×16 PCG sprites across
-three animated phases and serves as a verified foundation for hardware-accurate
-sprite-based game development on this platform.
+A bare-metal hardware demonstration for the Sharp X68000, written entirely in
+C99 (M68000-targeted). It drives 100 simultaneous 16×16 PCG sprites across
+three animated phases over a scrolling GVRAM background and serves as a
+verified foundation for hardware-accurate sprite-based game development on
+this platform.
 
 ---
 
@@ -13,15 +14,16 @@ sprite-based game development on this platform.
 2. [Track Loader Boot Mechanism](#track-loader-boot-mechanism)
 3. [Hardware Under Test](#hardware-under-test)
 4. [Demo Phases](#demo-phases)
-5. [Project Structure](#project-structure)
-6. [Build System](#build-system)
-7. [Toolchain Setup](#toolchain-setup)
-8. [Running the Demo](#running-the-demo)
-9. [Technical Architecture](#technical-architecture)
-10. [Key Algorithms](#key-algorithms)
-11. [Hard-Won Fixes and Gotchas](#hard-won-fixes-and-gotchas)
-12. [Using This as a Game Foundation](#using-this-as-a-game-foundation)
-13. [Extending the Demo](#extending-the-demo)
+5. [GVRAM Background Layer](#gvram-background-layer)
+6. [Project Structure](#project-structure)
+7. [Build System](#build-system)
+8. [Toolchain Setup](#toolchain-setup)
+9. [Running the Demo](#running-the-demo)
+10. [Technical Architecture](#technical-architecture)
+11. [Key Algorithms](#key-algorithms)
+12. [Hard-Won Fixes and Gotchas](#hard-won-fixes-and-gotchas)
+13. [Using This as a Game Foundation](#using-this-as-a-game-foundation)
+14. [Extending the Demo](#extending-the-demo)
 
 ---
 
@@ -260,17 +262,27 @@ is transparent.
 
 ### GVRAM (Graphic VRAM)
 
-`0xC00000` — 512KB planar graphic layer, 512×512 in 4bpp mode. The background
-gradient uses GVRAM: it is cleared to all-zero pixels (colour index 0), and the
-HBlank ISR changes what colour index 0 resolves to on each scanline. This gives
-a per-scanline gradient with no per-pixel cost.
+`0xC00000` — 512KB planar graphic layer, 512×512 in 4bpp mode.
 
-Colour palette for GVRAM lives at `0xE82000`. The sprite palettes begin at
-`0xE82200` (after the 16 GVRAM palette entries).
+This demo uses GVRAM for two overlapping effects:
 
-The HD63450 DMA controller fills GVRAM via a linked-array chain: the CPU fills
-row 0, then the DMA copies row N → row N+1 for 511 iterations, completing a
-full 512KB clear in hardware.
+1. **HBlank gradient:** GVRAM is filled with all-zero pixels (colour index 0).
+   The HBlank ISR rewrites palette entry 0 on every scanline, producing a
+   per-scanline blue gradient with no per-pixel CPU cost.
+
+2. **Scrolling tile background:** A 32×32 pixel embossed "CAFE" logo tile is
+   drawn into the top-left corner of GVRAM, then tiled 16×16 times to fill the
+   full 512×512 canvas. CRTC registers R12/R13 (`0xE80018`/`0xE8001A`) scroll
+   the layer +1 pixel per frame in both X and Y, producing smooth diagonal
+   movement with perfect toroidal wrap and no CPU cost beyond writing two
+   registers per frame.
+
+Colour palette for GVRAM lives at `0xE82000` (16 entries). The sprite palettes
+begin at `0xE82200` (after the 16 GVRAM palette entries).
+
+**CRTC scroll register note:** R10/R11 (`0xE80014`/`0xE80016`) scroll the
+**text** layer, not GVRAM. R12/R13 (`0xE80018`/`0xE8001A`) scroll the GVRAM
+graphic layer. Using R10/R11 produces no visible scroll effect on the GVRAM.
 
 ### MFP MC68901
 
@@ -291,6 +303,8 @@ The demo runs in **256×256 31 kHz 16-colour mode** (mode index 2). Key
 register groups:
 
 - `CRTC_R00`–`CRTC_R08` (`0xE80000`): horizontal and vertical timing
+- `CRTC_R10`/`CRTC_R11` (`0xE80014`/`0xE80016`): **text** layer H/V scroll
+- `CRTC_R12`/`CRTC_R13` (`0xE80018`/`0xE8001A`): **GVRAM** graphic layer H/V scroll
 - `CRTC_R20` (`0xE80028`): resolution and colour depth selector
 - `VC_R0`–`VC_R2` (`0xE82400`–`0xE82600`): layer enable and priority
 
@@ -367,6 +381,105 @@ distinguish it from the plex sprites on palette 0.
 
 ---
 
+## GVRAM Background Layer
+
+The background layer is implemented as a self-contained, reusable module:
+`include/x68k_bg.h` / `src/x68k_bg.c`. It is designed to be dropped into any
+X68000 project without modification.
+
+### API Overview
+
+```c
+// Palette
+void bg_set_pal(int idx, uint16_t grb555);
+void bg_load_pal(const uint16_t *src, int start, int count);
+void bg_grey_ramp(int start, int count);  // linear dark→bright grey ramp
+
+// Fill
+void bg_fill(uint8_t color_idx);          // CPU-fill 512×512 GVRAM
+
+// Pixel (inline, zero-overhead)
+static inline void bg_pset(int x, int y, uint8_t c);
+
+// Tile drawing from 128-byte PCG patterns
+void bg_draw_pcg(int gx, int gy, const uint8_t *pcg, uint8_t fg, uint8_t bg_c);
+void bg_draw_pcg_embossed(int gx, int gy, const uint8_t *pcg,
+                           uint8_t hi, uint8_t mid, uint8_t shadow, uint8_t bg_c);
+
+// Tiling (no division/modulo — pure wrap-counter)
+void bg_tile_region(int tile_w, int tile_h);
+
+// Hardware scroll (CRTC R12/R13, toroidal wrap 0–511)
+void bg_set_scroll(uint16_t x, uint16_t y);
+void bg_scroll_step(int16_t dx, int16_t dy);
+```
+
+### The CAFE Tile
+
+The demo uses four letters from the built-in 16×16 hex font PCG data to
+construct a 32×32 logo tile:
+
+```
+C A
+F E
+```
+
+- **C** = hex digit 12 = `FONT_PCG(12)`, placed at GVRAM (0, 0)
+- **A** = hex digit 10 = `FONT_PCG(10)`, placed at GVRAM (16, 0)
+- **F** = hex digit 15 = `FONT_PCG(15)`, placed at GVRAM (0, 16)
+- **E** = hex digit 14 = `FONT_PCG(14)`, placed at GVRAM (16, 16)
+
+### Emboss Effect
+
+Each letter is drawn with `bg_draw_pcg_embossed()` using a **directional
+light-source kernel** — the upper-left diagonal neighbour of each pixel
+determines its shade:
+
+| Pixel | Neighbour | Output |
+|-------|-----------|--------|
+| ON | OFF | `hi` (highlight — edge facing the light) |
+| OFF | ON | `shadow` (dark edge turned away from light) |
+| ON | ON | `mid` (interior, uniformly lit) |
+| OFF | OFF | `bg_c` (background — transparent for gradient show-through) |
+
+Parameters used: `hi=15, mid=8, shadow=1, bg_c=0` over a 15-entry grey ramp
+(`bg_grey_ramp(1, 15)`), giving a raised-metal appearance.
+
+Because `bg_c=0` is also the animated HBlank gradient colour, the open areas
+between glyphs show the blue gradient through the embossed tile, blending both
+effects seamlessly.
+
+### Tiling and Scroll
+
+After drawing the 32×32 tile into GVRAM at (0,0), `bg_tile_region(32, 32)`
+replicates it 16×16 times to fill the entire 512×512 GVRAM canvas. Because
+512 ÷ 32 = 16 exactly, the tiling is perfectly seamless. The algorithm uses
+two wrap-counter passes (no division or modulo anywhere):
+
+- **Pass 1:** extends each of the 32 source rows horizontally to 512 columns
+- **Pass 2:** copies the 32-row source block downward to fill all 512 rows
+
+Each frame, `bg_scroll_step(1, 1)` advances the CRTC R12/R13 hardware scroll
+registers by one pixel in both axes. The toroidal hardware wrap means the
+512×512 pattern scrolls forever without any redraw.
+
+### Typical Initialisation Sequence
+
+```c
+bg_fill(0);                                      // clear GVRAM to colour 0
+bg_grey_ramp(1, 15);                             // palette entries 1–15 = grey
+bg_draw_pcg_embossed( 0,  0, FONT_PCG(12), 15, 8, 1, 0);  // C
+bg_draw_pcg_embossed(16,  0, FONT_PCG(10), 15, 8, 1, 0);  // A
+bg_draw_pcg_embossed( 0, 16, FONT_PCG(15), 15, 8, 1, 0);  // F
+bg_draw_pcg_embossed(16, 16, FONT_PCG(14), 15, 8, 1, 0);  // E
+bg_tile_region(32, 32);
+
+// Once per VBlank in the main loop:
+bg_scroll_step(1, 1);
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -376,12 +489,14 @@ x68_sprite_plex_c/
 │   ├── start.s           M68K boot loader (floppy load, checksum, BSS clear)
 │   ├── sprite_plex.c     All demo logic: phases, PCG init, sprite updates
 │   ├── x68k_video.c      Video init, VBlank poll, DMA fill, HBlank ISR
+│   ├── x68k_bg.c         GVRAM background layer implementation
 │   ├── uhe_stub.c        Unhandled exception handler (halts with register dump)
 │   ├── memset.c          Minimal memset for BSS clear
 │   └── memsize.s         Exports __bss_start / _end symbols for linker
 ├── include/
 │   ├── types.h           Standalone int types (uint8_t etc.) — no stdint.h
 │   ├── x68k_hw.h         All hardware register addresses and REG8/16/32 macros
+│   ├── x68k_bg.h         GVRAM background layer API (palette, fill, PCG, scroll)
 │   └── x68k_video.h      Public API: init_video, wait_vblank, gvram_fill_dma,
 │                         init_hblank
 ├── data/
@@ -398,7 +513,7 @@ x68_sprite_plex_c/
 ├── roms/
 │   └── x68000/                 MAME ROM files (iplrom.dat, cgrom.dat)
 ├── Makefile
-└── DEMO.md                     This document
+└── README.md                   This document
 ```
 
 ### Generated Files
@@ -766,6 +881,10 @@ is what is already proven and ready to use.
 | Palette loading (GRB555, 16 banks) | Verified |
 | VBlank synchronisation | Verified |
 | Per-scanline HBlank gradient effect | Verified |
+| GVRAM background layer module (x68k_bg) | Complete |
+| Embossed PCG tile drawing | Verified |
+| Full-screen GVRAM tiling (no modulo) | Verified |
+| Hardware diagonal scroll (CRTC R12/R13) | Verified |
 | DMA GVRAM fill | Verified |
 | 128-sprite slot management | Demonstrated |
 | PCG batch swap (background pattern streaming) | Demonstrated |
@@ -822,14 +941,18 @@ effects in any serious game on this hardware.
 
 #### Scrolling Background
 
-For scrolling levels, use the GVRAM text plane (32×32 character cells,
-hardware-scrolled via `0xE80010`–`0xE80014`). The sprite layer sits in front,
-so GVRAM functions as a free-scrolling tilemap background with no CPU cost per
-frame beyond setting the scroll registers.
+The `x68k_bg` module provides a complete, reusable GVRAM background layer ready
+for game use. Draw any tile pattern into the top-left corner of GVRAM, call
+`bg_tile_region(w, h)` once to fill the 512×512 canvas, then call
+`bg_scroll_step(dx, dy)` once per VBlank to scroll at any speed and direction
+with automatic toroidal wrap. No redraw is ever needed.
 
-Alternatively, use the CRTC raster scroll trick: change the CRTC horizontal
-start register inside a mid-screen HBlank handler to scroll different rows at
-different speeds (parallax).
+For a game tilemap background, replace the 32×32 logo tile with a 64×64 (or
+larger, as long as 512 is divisible by it) rendered tilemap chunk. The hardware
+scroll handles the rest.
+
+For parallax effects, change the CRTC horizontal start register inside a
+mid-screen HBlank handler to scroll different rows at different speeds.
 
 #### Collision Detection
 
@@ -904,3 +1027,7 @@ design goal.
 | Feature | HBlank gradient background (pure blue, dark→vivid) |
 | Fix | SR inline asm: use .word opcode to avoid GAS relocation bug |
 | Tuning | Circle centre shifted +32px right for better visual balance |
+| Feature | x68k_bg module: palette, fill, PCG draw (flat + embossed), tiling, scroll |
+| Feature | CAFE tile: embossed 32×32 logo tiled 16×16 across 512×512 GVRAM |
+| Fix | GVRAM scroll: corrected from CRTC R10/R11 (text) to R12/R13 (GVRAM) |
+| Docs | README: full background layer documentation, API reference, tile design |
