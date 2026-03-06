@@ -35,6 +35,7 @@
 #include "types.h"
 #include "x68k_hw.h"
 #include "x68k_video.h"
+#include "x68k_bg.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Grid layout — resolved at compile time from DEMO_RES
@@ -515,5 +516,6 @@ void sprite_plex_loop(void)
         }
 
         update_font_display();
+        bg_scroll_step(1, 1);   // diagonal background scroll, hardware-wrapped
     }
 }

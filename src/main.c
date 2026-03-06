@@ -6,9 +6,14 @@
 #include "types.h"
 #include "x68k_hw.h"
 #include "x68k_video.h"
+#include "x68k_bg.h"
 
 extern void init_sprite_plex(void);
 extern void sprite_plex_loop(void);
+
+// Font PCG data (128 bytes each).  Order: '0'-'9' (0-9), 'A'-'F' (10-15).
+extern const uint8_t font_16x16_hex_data[];
+#define FONT_PCG(n)  (font_16x16_hex_data + (uint32_t)(n) * 128)
 
 // do_init — called exactly once by start.s, immediately after the binary is
 // loaded from floppy, BSS is cleared, and hardware interrupts are disabled.
@@ -32,7 +37,17 @@ void do_loader(void)
 #else
 #error "Unknown DEMO_RES. Build with DEMO_RES=256x256 or DEMO_RES=512x512"
 #endif
-    gvram_fill_dma(0);   // fill background with colour index 0
+    // Background layer — embossed CAFE tile scrolling diagonally.
+    // Palette entry 0 is left for the HBlank gradient; 1-15 = grey ramp.
+    // The 32×32 tile (4 × 16×16 glyphs) divides 512 exactly (16×16 copies).
+    bg_fill(0);
+    bg_grey_ramp(1, 15);
+    bg_draw_pcg_embossed( 0,  0, FONT_PCG(12), 15, 8, 1, 0);  // C
+    bg_draw_pcg_embossed(16,  0, FONT_PCG(10), 15, 8, 1, 0);  // A
+    bg_draw_pcg_embossed( 0, 16, FONT_PCG(15), 15, 8, 1, 0);  // F
+    bg_draw_pcg_embossed(16, 16, FONT_PCG(14), 15, 8, 1, 0);  // E
+    bg_tile_region(32, 32);
+
     init_hblank();       // install HBlank ISR for per-scanline blue gradient
     init_sprite_plex();
     sprite_plex_loop();

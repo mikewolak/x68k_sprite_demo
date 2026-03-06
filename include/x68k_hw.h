@@ -21,6 +21,8 @@
 #define CRTC_R06    0xE8000CUL
 #define CRTC_R07    0xE8000EUL
 #define CRTC_R08    0xE80010UL
+#define CRTC_R10    0xE80014UL  // GVRAM horizontal scroll (0-511)
+#define CRTC_R11    0xE80016UL  // GVRAM vertical scroll   (0-511)
 #define CRTC_R20    0xE80028UL
 
 // Video Controller
